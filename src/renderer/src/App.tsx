@@ -62,6 +62,25 @@ export default function App() {
     setLibraryTags((prev) => prev.filter((t) => t !== name))
   }
 
+  const libraryFolderSuggestions = useMemo(() => {
+    if (!librarySelectedItems?.length) return []
+    const seen = new Set<string>()
+    const suggestions: string[] = []
+    for (const item of librarySelectedItems) {
+      const parts = item.path.replace(/[/\\]+$/, '').split(/[/\\]/).filter(Boolean)
+      // הכללת כל שמות התיקיות מהשורש (לא כולל אות כונן)
+      const folderParts = item.kind === 'file' && parts.length > 1 ? parts.slice(0, -1) : parts
+      for (const name of folderParts) {
+        const n = normalizeTagName(name)
+        if (n && !/^[a-zA-Z]:$/.test(n) && !seen.has(n.toLowerCase())) {
+          seen.add(n.toLowerCase())
+          suggestions.push(n)
+        }
+      }
+    }
+    return suggestions.sort((a, b) => a.localeCompare(b))
+  }, [librarySelectedItems])
+
   function handlePickFiles() {
     setError(null)
     void window.api.pickFiles().then(async (picked) => {
@@ -309,6 +328,28 @@ export default function App() {
                       ))}
                     </div>
                   )}
+                  {libraryFolderSuggestions.length > 0 && (
+                    <>
+                      <p className="muted small" style={{ marginTop: '0.5rem', marginBottom: '0.25rem' }}>
+                        הצעות לפי שם תיקייה:
+                      </p>
+                      <div className="chips">
+                        {libraryFolderSuggestions
+                          .filter((s) => !libraryTags.some((t) => t.toLowerCase() === s.toLowerCase()))
+                          .map((s) => (
+                            <button
+                              key={s}
+                              type="button"
+                              className="chip"
+                              onClick={() => addLibraryTag(s)}
+                              title="הוסף כתגית"
+                            >
+                              {s}
+                            </button>
+                          ))}
+                      </div>
+                    </>
+                  )}
                   {tags.length > 0 && (
                     <>
                       <p className="muted small" style={{ marginTop: '0.5rem', marginBottom: '0.25rem' }}>
@@ -354,7 +395,7 @@ export default function App() {
               <div className="toolbar">
                 <input
                   readOnly
-                  style={{ flex: 1, minWidth: 200, background: 'var(--bg)' }}
+                  style={{ flex: 1, minWidth: 200, background: 'rgba(26, 26, 46, 0.6)' }}
                   value={searchScope ?? 'כל הנתיבים'}
                   title={searchScope ?? ''}
                 />

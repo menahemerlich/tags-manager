@@ -33,10 +33,11 @@
   "build": {
     "appId": "com.tagsmanager.app",
     "productName": "Tags Manager",
+    "icon": "build/icon.png",
     "directories": {
       "output": "release"
     },
-    "files": ["out/**/*"],
+    "files": ["out/**/*", "build/icon.png"],
     "asar": true,
     "asarUnpack": ["**/node_modules/sql.js/dist/**"],
     "win": {

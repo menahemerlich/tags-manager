@@ -7,12 +7,14 @@ let mainWindow: BrowserWindow | null = null
 let db: TagDatabase | null = null
 
 function createWindow(): void {
+  const iconPath = join(__dirname, '..', '..', 'build', 'icon.png')
   mainWindow = new BrowserWindow({
     title: 'מנהל תגיות',
     width: 1100,
     height: 760,
     minWidth: 800,
     minHeight: 560,
+    icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
