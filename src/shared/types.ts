@@ -10,6 +10,13 @@ export interface TagRow {
   created_at: string
 }
 
+export interface TagFolderRow {
+  id: number
+  name: string
+  created_at: string
+  tagIds: number[]
+}
+
 export interface PathRow {
   id: number
   path: string
@@ -87,4 +94,71 @@ export interface TagImportApplyPayload {
   scopePath: string
   defaultConflictChoice: ImportConflictChoice
   conflictChoicesByPath: Record<string, ImportConflictChoice>
+}
+
+export interface FacePersonEmbeddings {
+  personId: number
+  name: string
+  embeddings: number[][]
+}
+
+export const FACE_EMBEDDING_MODEL_ID = 'arcface.buffalo_l.w600k_r50.v1'
+
+export interface FaceAddEmbeddingPayload {
+  name: string
+  descriptor: number[]
+  modelId: string
+}
+
+export interface FaceDetection {
+  box: { x: number; y: number; width: number; height: number }
+  descriptor: number[]
+}
+
+export interface FaceMatchCandidate {
+  personId: number
+  name: string
+  distance: number
+  sampleCount: number
+  confidence: number
+  threshold: number
+  confidenceLabel: 'high' | 'probable' | 'uncertain'
+}
+
+export interface FaceDetectionWithCandidate extends FaceDetection {
+  candidate: FaceMatchCandidate | null
+}
+
+export interface FaceAnalyzeAndMatchResponse {
+  ok: true
+  modelId: string
+  faces: FaceDetectionWithCandidate[]
+}
+
+export interface FaceAnalyzeAndMatchErrorResponse {
+  ok: false
+  error: string
+}
+
+export interface FaceEmbeddingMetaRow {
+  embeddingId: number
+  personId: number
+  name: string
+  modelId: string | null
+  embeddingDim: number
+  createdAt: string
+}
+
+export interface FaceReplaceEmbeddingPayload {
+  embeddingId: number
+  descriptor: number[]
+  modelId: string
+}
+
+export interface FacePersonProfile {
+  personId: number
+  medoid: Float32Array
+  trimmedMean: Float32Array
+  sampleCount: number
+  lastUpdated: string
 }
