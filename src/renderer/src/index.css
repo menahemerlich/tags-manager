@@ -202,7 +202,21 @@ button {
   color: var(--text);
 }
 
+.field select {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(26, 26, 46, 0.6);
+  color: var(--text);
+}
+
 .field input:focus {
+  outline: none;
+  border-color: rgba(0, 212, 255, 0.5);
+  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
+}
+
+.field select:focus {
   outline: none;
   border-color: rgba(0, 212, 255, 0.5);
   box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
@@ -366,4 +380,37 @@ tr.selected td {
 
 .small {
   font-size: 0.8rem;
+}
+
+.app-footer {
+  position: relative;
+  z-index: 1;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  background: rgba(22, 33, 62, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.app-footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.app-footer-symbol {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  color: rgba(0, 212, 255, 0.9);
+  background: rgba(0, 212, 255, 0.08);
+  font-weight: 700;
+  font-size: 0.78rem;
 }

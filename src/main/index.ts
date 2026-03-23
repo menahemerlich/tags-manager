@@ -9,7 +9,7 @@ let db: TagDatabase | null = null
 function createWindow(): void {
   const iconPath = join(__dirname, '..', '..', 'build', 'icon.png')
   mainWindow = new BrowserWindow({
-    title: 'מנהל תגיות',
+    title: 'ניהול ארכיון',
     width: 1100,
     height: 760,
     minWidth: 800,

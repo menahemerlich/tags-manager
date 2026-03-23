@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { PathKind, SearchResultRow, TagRow } from '../../shared/types'
+import type { ImportConflictChoice, PathKind, SearchResultRow, TagImportPreview, TagRow } from '../../shared/types'
 import { normalizeTagName } from '../../shared/tagNormalize'
 
 type Tab = 'library' | 'search' | 'tags' | 'settings'
@@ -19,12 +19,21 @@ export default function App() {
   const [searchScope, setSearchScope] = useState<string | null>(null)
   const [searchResults, setSearchResults] = useState<SearchResultRow[]>([])
   const [searchTruncated, setSearchTruncated] = useState(false)
+  const [searchLoading, setSearchLoading] = useState(false)
   const [selectedSearchPath, setSelectedSearchPath] = useState<string | null>(null)
   const [selectedSearchDirectTags, setSelectedSearchDirectTags] = useState<string[]>([])
   const [searchFileTagDraft, setSearchFileTagDraft] = useState('')
   const [settingsRepo, setSettingsRepo] = useState('')
+  const [settingsView, setSettingsView] = useState<'updates' | 'io' | 'about'>('updates')
   const [appVersion, setAppVersion] = useState('')
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
+  const [tagIoScopePath, setTagIoScopePath] = useState<string | null>(null)
+  const [tagIoMsg, setTagIoMsg] = useState<string | null>(null)
+  const [importPreview, setImportPreview] = useState<TagImportPreview | null>(null)
+  const [importDefaultChoice, setImportDefaultChoice] = useState<ImportConflictChoice>('skip')
+  const [importChoicesByPath, setImportChoicesByPath] = useState<Record<string, ImportConflictChoice>>({})
+  const [importApplying, setImportApplying] = useState(false)
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null)
   const [indexing, setIndexing] = useState<{ done: number; total: number; currentPath: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -45,6 +54,13 @@ export default function App() {
       if (p.total > 0 && p.done >= p.total) {
         setTimeout(() => setIndexing(null), 150)
       }
+    })
+    return off
+  }, [])
+
+  useEffect(() => {
+    const off = window.api.onImportProgress((p) => {
+      setImportProgress(p)
     })
     return off
   }, [])
@@ -148,9 +164,14 @@ export default function App() {
 
   const runSearch = useCallback(async () => {
     setError(null)
-    const res = await window.api.search(searchSelected)
-    setSearchResults(res.rows)
-    setSearchTruncated(res.truncated ?? false)
+    setSearchLoading(true)
+    try {
+      const res = await window.api.search(searchSelected)
+      setSearchResults(res.rows)
+      setSearchTruncated(res.truncated ?? false)
+    } finally {
+      setSearchLoading(false)
+    }
   }, [searchSelected])
 
   useEffect(() => {
@@ -202,6 +223,73 @@ export default function App() {
     }
   }
 
+  async function chooseTagIoScope() {
+    setError(null)
+    const folder = await window.api.pickFolder()
+    if (folder) setTagIoScopePath(folder)
+  }
+
+  async function handleExportTagsJson() {
+    if (!tagIoScopePath) {
+      setError('יש לבחור תיקייה או כונן לייצוא')
+      return
+    }
+    setError(null)
+    setTagIoMsg(null)
+    const res = await window.api.exportTagsJson(tagIoScopePath)
+    if (!res.ok) {
+      if (!res.cancelled) setError(res.error ?? 'ייצוא נכשל')
+      return
+    }
+    setTagIoMsg(`יוצאו ${res.exportedCount} רשומות לקובץ: ${res.filePath}`)
+  }
+
+  async function handleImportPreview() {
+    if (!tagIoScopePath) {
+      setError('יש לבחור תיקייה או כונן לייבוא')
+      return
+    }
+    setError(null)
+    setTagIoMsg(null)
+    const res = await window.api.importTagsPreview(tagIoScopePath)
+    if (!res.ok) {
+      if (!res.cancelled) setError(res.error ?? 'ניתוח ייבוא נכשל')
+      return
+    }
+    setImportPreview(res.preview)
+    setImportChoicesByPath({})
+    setTagIoMsg(
+      `נטענו ${res.preview.totalEntries} רשומות: חדשות ${res.preview.newEntries}, ללא שינוי ${res.preview.unchangedEntries}, התנגשויות ${res.preview.conflictEntries}`
+    )
+  }
+
+  async function handleApplyImport() {
+    if (!importPreview) {
+      setError('אין נתוני ייבוא להחלה')
+      return
+    }
+    if (!confirm('להחיל את הייבוא לפי ההגדרות שבחרת?')) return
+    setError(null)
+    setImportApplying(true)
+    setImportProgress({ done: 0, total: 0 })
+    const res = await window.api.importTagsApply({
+      sourceFilePath: importPreview.sourceFilePath,
+      scopePath: importPreview.scopePath,
+      defaultConflictChoice: importDefaultChoice,
+      conflictChoicesByPath: importChoicesByPath
+    })
+    if (!res.ok) {
+      setError(res.error)
+      setImportApplying(false)
+      setImportProgress(null)
+      return
+    }
+    setTagIoMsg(`ייבוא הוחל: עודכנו ${res.appliedCount} רשומות, דולגו ${res.skippedCount}`)
+    setImportApplying(false)
+    setImportProgress(null)
+    await refreshTags()
+  }
+
   function toggleQuickSearchTag(name: string) {
     setSearchSelected((prev) =>
       prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]
@@ -241,7 +329,7 @@ export default function App() {
   return (
     <div className="app" dir="rtl">
       <header className="topbar">
-        <h1>מנהל תגיות</h1>
+        <h1>ניהול ארכיון</h1>
         <nav className="nav">
           {(
             [
@@ -458,6 +546,16 @@ export default function App() {
                 מוצגות 5,000 התוצאות הראשונות. צמצם את החיפוש או הוסף תגיות.
               </p>
             )}
+            {searchSelected.length > 0 && !searchTruncated && !searchLoading && searchResultsFiltered.length === 0 && (
+              <p className="muted small" style={{ marginBottom: '0.5rem' }}>
+                אין תוצאות.
+              </p>
+            )}
+            {searchLoading && (
+              <p className="muted small" style={{ marginBottom: '0.5rem' }}>
+                מחפש...
+              </p>
+            )}
             <div className="table-wrap">
               <table>
                 <thead>
@@ -610,33 +708,193 @@ export default function App() {
 
         {tab === 'settings' && (
           <section className="panel">
-            <div className="field">
-              <label htmlFor="gh-repo">מאגר GitHub לעדכונים (בעלים/שם)</label>
-              <input
-                id="gh-repo"
-                value={settingsRepo}
-                onChange={(e) => setSettingsRepo(e.target.value)}
-                placeholder="למשל: user/tags-manager"
-              />
-            </div>
-            <div className="toolbar">
-              <button type="button" className="btn primary" onClick={() => void saveSettings()}>
-                שמור הגדרות
+            <div className="toolbar" style={{ marginBottom: '1rem' }}>
+              <button
+                type="button"
+                className={settingsView === 'updates' ? 'btn primary' : 'btn'}
+                onClick={() => setSettingsView('updates')}
+              >
+                עדכונים
               </button>
-              <button type="button" className="btn" onClick={() => void checkUpdates()}>
-                בדוק עדכונים
+              <button
+                type="button"
+                className={settingsView === 'io' ? 'btn primary' : 'btn'}
+                onClick={() => setSettingsView('io')}
+              >
+                ייבוא/ייצוא
+              </button>
+              <button
+                type="button"
+                className={settingsView === 'about' ? 'btn primary' : 'btn'}
+                onClick={() => setSettingsView('about')}
+              >
+                הסבר על האפליקציה
               </button>
             </div>
-            {updateMsg && <p className="muted">{updateMsg}</p>}
-            <p className="muted small">
-              הבדיקה משתמשת ב־API הציבורי של GitHub לגרסה האחרונה. אם יש גרסה חדשה (לפי מספור semver),
-              ייפתח דף השחרור בדפדפן.
-            </p>
-            <p className="muted small" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-              <strong>כוננים חיצוניים:</strong> הנתיבים נשמרים כמוחלטים (כולל אות כונן). אם דיסק USB מקבל אות
-              אחר, ייתכן שתצטרכו לבחור מחדש או להוסיף שוב את התיקיות — תכונה להחלפת נתיב גלובלית תתווסף
-              בעתיד אם יידרש.
-            </p>
+
+            {settingsView === 'updates' && (
+              <>
+                <div className="field">
+                  <label htmlFor="gh-repo">מאגר GitHub לעדכונים (בעלים/שם)</label>
+                  <input
+                    id="gh-repo"
+                    value={settingsRepo}
+                    onChange={(e) => setSettingsRepo(e.target.value)}
+                    placeholder="למשל: user/tags-manager"
+                  />
+                </div>
+                <div className="toolbar">
+                  <button type="button" className="btn primary" onClick={() => void saveSettings()}>
+                    שמור הגדרות
+                  </button>
+                  <button type="button" className="btn" onClick={() => void checkUpdates()}>
+                    בדוק עדכונים
+                  </button>
+                </div>
+                {updateMsg && <p className="muted">{updateMsg}</p>}
+                <p className="muted small" style={{ marginTop: '0.75rem' }}>
+                  הבדיקה משתמשת ב־API הציבורי של GitHub לגרסה האחרונה. אם יש גרסה חדשה (לפי מספור semver),
+                  ייפתח דף השחרור בדפדפן.
+                </p>
+                <p className="muted small" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                  <strong>כוננים חיצוניים:</strong> הנתיבים נשמרים כמוחלטים (כולל אות כונן). אם דיסק USB מקבל אות
+                  אחר, ייתכן שתצטרכו לבחור מחדש או להוסיף שוב את התיקיות — תכונה להחלפת נתיב גלובלית תתווסף
+                  בעתיד אם יידרש.
+                </p>
+              </>
+            )}
+
+            {settingsView === 'io' && (
+              <>
+                <div className="field" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                  <label>ייצוא/ייבוא תגיות לפי תחום (כונן/תיקייה)</label>
+                  <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                    <input
+                      readOnly
+                      style={{ flex: 1, minWidth: 220, background: 'rgba(26, 26, 46, 0.6)' }}
+                      value={tagIoScopePath ?? 'לא נבחר תחום'}
+                      title={tagIoScopePath ?? ''}
+                    />
+                    <button type="button" className="btn" onClick={() => void chooseTagIoScope()}>
+                      בחר תחום
+                    </button>
+                    {tagIoScopePath && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          setTagIoScopePath(null)
+                          setImportPreview(null)
+                          setTagIoMsg(null)
+                        }}
+                      >
+                        נקה
+                      </button>
+                    )}
+                  </div>
+                  <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                    <button type="button" className="btn primary" onClick={() => void handleExportTagsJson()}>
+                      ייצוא תגיות לקובץ JSON
+                    </button>
+                    <button type="button" className="btn" onClick={() => void handleImportPreview()}>
+                      טעינת קובץ ייבוא וניתוח התנגשויות
+                    </button>
+                  </div>
+                  {importPreview && (
+                    <div className="field" style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
+                      <p className="muted small" style={{ margin: 0 }}>
+                        קובץ: {importPreview.sourceFilePath}
+                      </p>
+                      <p className="muted small" style={{ margin: 0 }}>
+                        סיכום: סה״כ {importPreview.totalEntries}, חדשים {importPreview.newEntries}, ללא שינוי{' '}
+                        {importPreview.unchangedEntries}, התנגשויות {importPreview.conflictEntries}
+                      </p>
+                      <div className="field">
+                        <label>ברירת מחדל להתנגשות</label>
+                        <select
+                          value={importDefaultChoice}
+                          onChange={(e) => setImportDefaultChoice(e.target.value as ImportConflictChoice)}
+                          style={{ maxWidth: 280 }}
+                        >
+                          <option value="skip">דלג</option>
+                          <option value="replace">החלף בקובץ הייבוא</option>
+                          <option value="merge">מזג תגיות</option>
+                        </select>
+                      </div>
+                      {importPreview.conflicts.length > 0 && (
+                        <div className="table-wrap" style={{ marginTop: '0.25rem' }}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>נתיב</th>
+                                <th>קיים</th>
+                                <th>מיובא</th>
+                                <th>החלטה</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {importPreview.conflicts.map((c) => (
+                                <tr key={c.path}>
+                                  <td className="path-cell">{c.path}</td>
+                                  <td className="path-cell">{c.existingDirectTags.join(', ') || '—'}</td>
+                                  <td className="path-cell">{c.importedDirectTags.join(', ') || '—'}</td>
+                                  <td>
+                                    <select
+                                      value={importChoicesByPath[c.path] ?? importDefaultChoice}
+                                      onChange={(e) =>
+                                        setImportChoicesByPath((prev) => ({
+                                          ...prev,
+                                          [c.path]: e.target.value as ImportConflictChoice
+                                        }))
+                                      }
+                                    >
+                                      <option value="skip">דלג</option>
+                                      <option value="replace">החלף</option>
+                                      <option value="merge">מזג</option>
+                                    </select>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      <div className="toolbar" style={{ marginTop: '0.5rem' }}>
+                        <button
+                          type="button"
+                          className="btn primary"
+                          disabled={importApplying}
+                          onClick={() => void handleApplyImport()}
+                        >
+                          החל ייבוא
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {tagIoMsg && <p className="muted">{tagIoMsg}</p>}
+                </div>
+              </>
+            )}
+
+            {settingsView === 'about' && (
+              <>
+                <p className="muted small">
+                  <strong>ספרייה:</strong> בחרו קבצים/תיקיות, הוסיפו תגיות, ואז לחצו <strong>שמור וסיים</strong>.
+                  התגים נשמרים מקומית לצורך חיפוש.
+                </p>
+                <p className="muted small">
+                  <strong>חיפוש:</strong> בחרו תגיות — יוצגו רק <strong>קבצים</strong> שמכילים <strong>את כל</strong> התגיות.
+                  ניתן לצמצם לנתיב/כונן מסוים. לחיצה על שורה פותחת את הקובץ, ו־<strong>ערוך</strong> מאפשר לשנות תגיות.
+                </p>
+                <p className="muted small">
+                  <strong>תגיות:</strong> אפשר לשנות שם לתגית או למחוק אותה (זה ישפיע על כל המערכת).
+                </p>
+                <p className="muted small" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                  <strong>ייבוא/ייצוא:</strong> לשונית זו מאפשרת לייצא תגיות לקובץ JSON לפי תחום, ואז לייבא בחזרה.
+                  בעת ייבוא מוצג preview עם התנגשויות, כדי שתוכלו לבחור מה לעשות לפני שהשינויים מוחלים.
+                </p>
+              </>
+            )}
           </section>
         )}
       </main>
@@ -666,6 +924,35 @@ export default function App() {
           </div>
         </div>
       )}
+      {importApplying && importProgress && (
+        <div className="overlay">
+          <div className="overlay-card">
+            <strong>ייבוא תגיות</strong>
+            <p className="muted small">
+              {importProgress.done} / {importProgress.total || '…'} רשומות
+            </p>
+            <div className="progress-bar">
+              <div
+                style={{
+                  width: importProgress.total
+                    ? `${Math.min(100, (importProgress.done / importProgress.total) * 100)}%`
+                    : '0%'
+                }}
+              />
+            </div>
+            <p className="muted small" style={{ marginTop: '0.5rem' }}>
+              מעבד… אל תסגור את האפליקציה.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <footer className="app-footer">
+        <div className="app-footer-inner">
+          <span className="app-footer-symbol">©</span>
+          <span className="app-footer-text">כל הזכויות שמורות ארכיון 'פני זקן'</span>
+        </div>
+      </footer>
     </div>
   )
 }
