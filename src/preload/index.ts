@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AppSettings } from '../shared/types'
-import type { PathKind, SearchResult, SearchResultRow, TagRow, UpdateCheckResult } from '../shared/types'
+import type {
+  PathKind,
+  SearchResult,
+  TagImportApplyPayload,
+  TagImportPreview,
+  TagRow,
+  UpdateCheckResult
+} from '../shared/types'
 
 const api = {
   addItems: (items: { path: string; kind: PathKind }[], tagNames: string[]) =>
@@ -26,6 +33,18 @@ const api = {
   getSettings: () => ipcRenderer.invoke('settings:get') as Promise<AppSettings>,
   setSettings: (s: AppSettings) => ipcRenderer.invoke('settings:set', s) as Promise<{ ok: true }>,
   checkUpdates: () => ipcRenderer.invoke('updates:check') as Promise<UpdateCheckResult>,
+  exportTagsJson: (scopePath: string) =>
+    ipcRenderer.invoke('tags:export-json', scopePath) as Promise<
+      { ok: true; filePath: string; exportedCount: number } | { ok: false; cancelled?: true; error?: string }
+    >,
+  importTagsPreview: (scopePath: string) =>
+    ipcRenderer.invoke('tags:import-preview', scopePath) as Promise<
+      { ok: true; preview: TagImportPreview } | { ok: false; cancelled?: true; error?: string }
+    >,
+  importTagsApply: (payload: TagImportApplyPayload) =>
+    ipcRenderer.invoke('tags:import-apply', payload) as Promise<
+      { ok: true; appliedCount: number; skippedCount: number } | { ok: false; error: string }
+    >,
   getAppVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
   onIndexProgress: (cb: (p: { done: number; total: number; currentPath: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { done: number; total: number; currentPath: string }) =>

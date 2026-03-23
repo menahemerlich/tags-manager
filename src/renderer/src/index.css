@@ -202,7 +202,21 @@ button {
   color: var(--text);
 }
 
+.field select {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(26, 26, 46, 0.6);
+  color: var(--text);
+}
+
 .field input:focus {
+  outline: none;
+  border-color: rgba(0, 212, 255, 0.5);
+  box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);
+}
+
+.field select:focus {
   outline: none;
   border-color: rgba(0, 212, 255, 0.5);
   box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.15);

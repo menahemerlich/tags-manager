@@ -1,4 +1,12 @@
-import type { AppSettings, PathKind, SearchResult, SearchResultRow, TagRow } from './types'
+import type {
+  AppSettings,
+  PathKind,
+  SearchResult,
+  TagImportApplyPayload,
+  TagImportPreview,
+  TagRow,
+  UpdateCheckResult
+} from './types'
 
 /** Shape of `window.api` exposed from preload (for renderer typing). */
 export interface ElectronApi {
@@ -20,6 +28,11 @@ export interface ElectronApi {
   getSettings: () => Promise<AppSettings>
   setSettings: (s: AppSettings) => Promise<{ ok: true }>
   checkUpdates: () => Promise<UpdateCheckResult>
+  exportTagsJson: (scopePath: string) => Promise<{ ok: true; filePath: string; exportedCount: number } | { ok: false; cancelled?: true; error?: string }>
+  importTagsPreview: (scopePath: string) => Promise<{ ok: true; preview: TagImportPreview } | { ok: false; cancelled?: true; error?: string }>
+  importTagsApply: (
+    payload: TagImportApplyPayload
+  ) => Promise<{ ok: true; appliedCount: number; skippedCount: number } | { ok: false; error: string }>
   getAppVersion: () => Promise<string>
   onIndexProgress: (
     cb: (p: { done: number; total: number; currentPath: string }) => void

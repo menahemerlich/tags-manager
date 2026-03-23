@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { PathKind, SearchResultRow, TagRow } from '../../shared/types'
+import type { ImportConflictChoice, PathKind, SearchResultRow, TagImportPreview, TagRow } from '../../shared/types'
 import { normalizeTagName } from '../../shared/tagNormalize'
 
 type Tab = 'library' | 'search' | 'tags' | 'settings'
@@ -25,6 +25,11 @@ export default function App() {
   const [settingsRepo, setSettingsRepo] = useState('')
   const [appVersion, setAppVersion] = useState('')
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
+  const [tagIoScopePath, setTagIoScopePath] = useState<string | null>(null)
+  const [tagIoMsg, setTagIoMsg] = useState<string | null>(null)
+  const [importPreview, setImportPreview] = useState<TagImportPreview | null>(null)
+  const [importDefaultChoice, setImportDefaultChoice] = useState<ImportConflictChoice>('skip')
+  const [importChoicesByPath, setImportChoicesByPath] = useState<Record<string, ImportConflictChoice>>({})
   const [indexing, setIndexing] = useState<{ done: number; total: number; currentPath: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -200,6 +205,67 @@ export default function App() {
     } else {
       setUpdateMsg(`אין עדכון — הגרסה המותקנת היא העדכנית (${r.currentVersion}).`)
     }
+  }
+
+  async function chooseTagIoScope() {
+    setError(null)
+    const folder = await window.api.pickFolder()
+    if (folder) setTagIoScopePath(folder)
+  }
+
+  async function handleExportTagsJson() {
+    if (!tagIoScopePath) {
+      setError('יש לבחור תיקייה או כונן לייצוא')
+      return
+    }
+    setError(null)
+    setTagIoMsg(null)
+    const res = await window.api.exportTagsJson(tagIoScopePath)
+    if (!res.ok) {
+      if (!res.cancelled) setError(res.error ?? 'ייצוא נכשל')
+      return
+    }
+    setTagIoMsg(`יוצאו ${res.exportedCount} רשומות לקובץ: ${res.filePath}`)
+  }
+
+  async function handleImportPreview() {
+    if (!tagIoScopePath) {
+      setError('יש לבחור תיקייה או כונן לייבוא')
+      return
+    }
+    setError(null)
+    setTagIoMsg(null)
+    const res = await window.api.importTagsPreview(tagIoScopePath)
+    if (!res.ok) {
+      if (!res.cancelled) setError(res.error ?? 'ניתוח ייבוא נכשל')
+      return
+    }
+    setImportPreview(res.preview)
+    setImportChoicesByPath({})
+    setTagIoMsg(
+      `נטענו ${res.preview.totalEntries} רשומות: חדשות ${res.preview.newEntries}, ללא שינוי ${res.preview.unchangedEntries}, התנגשויות ${res.preview.conflictEntries}`
+    )
+  }
+
+  async function handleApplyImport() {
+    if (!importPreview) {
+      setError('אין נתוני ייבוא להחלה')
+      return
+    }
+    if (!confirm('להחיל את הייבוא לפי ההגדרות שבחרת?')) return
+    setError(null)
+    const res = await window.api.importTagsApply({
+      sourceFilePath: importPreview.sourceFilePath,
+      scopePath: importPreview.scopePath,
+      defaultConflictChoice: importDefaultChoice,
+      conflictChoicesByPath: importChoicesByPath
+    })
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    setTagIoMsg(`ייבוא הוחל: עודכנו ${res.appliedCount} רשומות, דולגו ${res.skippedCount}`)
+    await refreshTags()
   }
 
   function toggleQuickSearchTag(name: string) {
@@ -628,6 +694,108 @@ export default function App() {
               </button>
             </div>
             {updateMsg && <p className="muted">{updateMsg}</p>}
+            <div className="field" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+              <label>ייצוא/ייבוא תגיות לפי תחום (כונן/תיקייה)</label>
+              <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                <input
+                  readOnly
+                  style={{ flex: 1, minWidth: 220, background: 'rgba(26, 26, 46, 0.6)' }}
+                  value={tagIoScopePath ?? 'לא נבחר תחום'}
+                  title={tagIoScopePath ?? ''}
+                />
+                <button type="button" className="btn" onClick={() => void chooseTagIoScope()}>
+                  בחר תחום
+                </button>
+                {tagIoScopePath && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      setTagIoScopePath(null)
+                      setImportPreview(null)
+                      setTagIoMsg(null)
+                    }}
+                  >
+                    נקה
+                  </button>
+                )}
+              </div>
+              <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                <button type="button" className="btn primary" onClick={() => void handleExportTagsJson()}>
+                  ייצוא תגיות לקובץ JSON
+                </button>
+                <button type="button" className="btn" onClick={() => void handleImportPreview()}>
+                  טעינת קובץ ייבוא וניתוח התנגשויות
+                </button>
+              </div>
+              {importPreview && (
+                <div className="field" style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
+                  <p className="muted small" style={{ margin: 0 }}>
+                    קובץ: {importPreview.sourceFilePath}
+                  </p>
+                  <p className="muted small" style={{ margin: 0 }}>
+                    סיכום: סה״כ {importPreview.totalEntries}, חדשים {importPreview.newEntries}, ללא שינוי{' '}
+                    {importPreview.unchangedEntries}, התנגשויות {importPreview.conflictEntries}
+                  </p>
+                  <div className="field">
+                    <label>ברירת מחדל להתנגשות</label>
+                    <select
+                      value={importDefaultChoice}
+                      onChange={(e) => setImportDefaultChoice(e.target.value as ImportConflictChoice)}
+                      style={{ maxWidth: 280 }}
+                    >
+                      <option value="skip">דלג</option>
+                      <option value="replace">החלף בקובץ הייבוא</option>
+                      <option value="merge">מזג תגיות</option>
+                    </select>
+                  </div>
+                  {importPreview.conflicts.length > 0 && (
+                    <div className="table-wrap" style={{ marginTop: '0.25rem' }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>נתיב</th>
+                            <th>קיים</th>
+                            <th>מיובא</th>
+                            <th>החלטה</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importPreview.conflicts.map((c) => (
+                            <tr key={c.path}>
+                              <td className="path-cell">{c.path}</td>
+                              <td className="path-cell">{c.existingDirectTags.join(', ') || '—'}</td>
+                              <td className="path-cell">{c.importedDirectTags.join(', ') || '—'}</td>
+                              <td>
+                                <select
+                                  value={importChoicesByPath[c.path] ?? importDefaultChoice}
+                                  onChange={(e) =>
+                                    setImportChoicesByPath((prev) => ({
+                                      ...prev,
+                                      [c.path]: e.target.value as ImportConflictChoice
+                                    }))
+                                  }
+                                >
+                                  <option value="skip">דלג</option>
+                                  <option value="replace">החלף</option>
+                                  <option value="merge">מזג</option>
+                                </select>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <div className="toolbar" style={{ marginTop: '0.5rem' }}>
+                    <button type="button" className="btn primary" onClick={() => void handleApplyImport()}>
+                      החל ייבוא
+                    </button>
+                  </div>
+                </div>
+              )}
+              {tagIoMsg && <p className="muted">{tagIoMsg}</p>}
+            </div>
             <p className="muted small">
               הבדיקה משתמשת ב־API הציבורי של GitHub לגרסה האחרונה. אם יש גרסה חדשה (לפי מספור semver),
               ייפתח דף השחרור בדפדפן.

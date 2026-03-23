@@ -1,15 +1,39 @@
 import { BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
 import type { App } from 'electron'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { TagDatabase } from './database'
 import { indexFolderFiles } from './fileIndexer'
 import { loadSettings, saveSettings } from './settingsStore'
-import type { AppSettings } from '../shared/types'
+import type { AppSettings, TagExportJson, TagImportApplyPayload } from '../shared/types'
 import { checkGithubRelease } from './updates'
 import { normalizePath } from '../shared/pathUtils'
 import { normalizeTagName } from '../shared/tagNormalize'
 import type { PathKind } from '../shared/types'
 
 let indexAbort: AbortController | null = null
+
+function parseImportJson(raw: string): TagExportJson {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw) as unknown
+  } catch {
+    throw new Error('קובץ JSON לא תקין')
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('מבנה JSON לא תקין')
+  const obj = parsed as Partial<TagExportJson>
+  if (obj.format !== 'tags-manager-export-v1') throw new Error('פורמט קובץ לא נתמך')
+  if (!Array.isArray(obj.entries)) throw new Error('רשומות ייבוא חסרות או לא תקינות')
+  for (const entry of obj.entries) {
+    if (!entry || typeof entry !== 'object') throw new Error('רשומת ייבוא לא תקינה')
+    const e = entry as { path?: unknown; kind?: unknown; directTags?: unknown; excludedInheritedTags?: unknown }
+    if (typeof e.path !== 'string' || !e.path.trim()) throw new Error('רשומת ייבוא כוללת נתיב לא תקין')
+    if (e.kind !== 'file' && e.kind !== 'folder') throw new Error('סוג רשומה לא תקין')
+    if (!Array.isArray(e.directTags) || !Array.isArray(e.excludedInheritedTags)) {
+      throw new Error('רשומת ייבוא כוללת שדות תגיות לא תקינים')
+    }
+  }
+  return obj as TagExportJson
+}
 
 export function registerIpcHandlers(
   app: App,
@@ -122,6 +146,55 @@ export function registerIpcHandlers(
   ipcMain.handle('tags:delete', async (_e, id: number) => {
     getDb().deleteTag(id)
     return { ok: true as const }
+  })
+
+  ipcMain.handle('tags:export-json', async (_e, scopePath: string) => {
+    try {
+      const normalizedScope = normalizePath(scopePath)
+      const exportData = getDb().exportTagJsonByScope(normalizedScope)
+      const win = getWindow()
+      const suggestedBase = normalizedScope.replace(/[:\\\/]+/g, '_')
+      const saveRes = await dialog.showSaveDialog(win ?? undefined, {
+        title: 'ייצוא תגיות',
+        defaultPath: `tags-export-${suggestedBase}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      })
+      if (saveRes.canceled || !saveRes.filePath) return { ok: false as const, cancelled: true as const }
+      writeFileSync(saveRes.filePath, JSON.stringify(exportData, null, 2), 'utf-8')
+      return { ok: true as const, filePath: saveRes.filePath, exportedCount: exportData.entries.length }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message }
+    }
+  })
+
+  ipcMain.handle('tags:import-preview', async (_e, scopePath: string) => {
+    const win = getWindow()
+    const pickRes = await dialog.showOpenDialog(win ?? undefined, {
+      title: 'ייבוא תגיות',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (pickRes.canceled || pickRes.filePaths.length === 0) return { ok: false as const, cancelled: true as const }
+    try {
+      const sourceFilePath = pickRes.filePaths[0] as string
+      const raw = readFileSync(sourceFilePath, 'utf-8')
+      const data = parseImportJson(raw)
+      const preview = getDb().previewImportByScope(data, normalizePath(scopePath))
+      return { ok: true as const, preview: { ...preview, sourceFilePath } }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message }
+    }
+  })
+
+  ipcMain.handle('tags:import-apply', async (_e, payload: TagImportApplyPayload) => {
+    try {
+      const raw = readFileSync(payload.sourceFilePath, 'utf-8')
+      const data = parseImportJson(raw)
+      const result = getDb().applyImportByScope(data, payload)
+      return { ok: true as const, ...result }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
   })
 
   ipcMain.handle('search:query', async (_e, tagNames: string[]) => {
