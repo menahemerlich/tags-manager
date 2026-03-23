@@ -188,12 +188,24 @@ export function registerIpcHandlers(
 
   ipcMain.handle('tags:import-apply', async (_e, payload: TagImportApplyPayload) => {
     try {
+      const db = getDb()
+      const win = getWindow()
+      const wc = win?.webContents
+      db.beginBulkMode()
       const raw = readFileSync(payload.sourceFilePath, 'utf-8')
       const data = parseImportJson(raw)
-      const result = getDb().applyImportByScope(data, payload)
+      const result = await db.applyImportByScope(data, payload, {
+        onProgress: (p) => wc?.send('import:progress', p)
+      })
       return { ok: true as const, ...result }
     } catch (e) {
       return { ok: false as const, error: (e as Error).message || String(e) }
+    } finally {
+      try {
+        getDb().endBulkMode()
+      } catch {
+        // ignore
+      }
     }
   })
 

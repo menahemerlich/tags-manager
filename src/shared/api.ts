@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  ImportProgress,
   PathKind,
   SearchResult,
   TagImportApplyPayload,
@@ -37,6 +38,7 @@ export interface ElectronApi {
   onIndexProgress: (
     cb: (p: { done: number; total: number; currentPath: string }) => void
   ) => () => void
+  onImportProgress: (cb: (p: ImportProgress) => void) => () => void
   pickFiles: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => Promise<string | null>,

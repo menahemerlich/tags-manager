@@ -32,7 +32,7 @@
   },
   "build": {
     "appId": "com.tagsmanager.app",
-    "productName": "Tags Manager",
+    "productName": "ניהול ארכיון",
     "icon": "build/icon.png",
     "directories": {
       "output": "release"

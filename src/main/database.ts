@@ -308,7 +308,8 @@ export class TagDatabase {
   getEffectiveTagNamesForPath(absPath: string): string[] {
     const norm = normalizePath(absPath)
     const kind = this.getPathKind(norm)
-    if (kind === 'folder') return this.getDirectTagNamesForPath(norm)
+    // תיקיות צריכות לקבל גם תגיות בירושה מאבות (כולל החרגות מקומיות),
+    // אחרת UI מציג "רק את התגיות של התיקייה" ולא את המצב האפקטיבי.
     const pathIdsToCheck = [norm, ...ancestorDirsOfFile(norm)]
     const placeholders = pathIdsToCheck.map(() => '?').join(',')
     const stmt = this.db.prepare(`SELECT id FROM paths WHERE path IN (${placeholders})`)
@@ -457,13 +458,13 @@ export class TagDatabase {
   }
 
   private isPathInScope(pathValue: string, scopePath: string): boolean {
-    const normPath = normalizePath(pathValue).replace(/[/\\]+$/, '')
-    const normScope = normalizePath(scopePath).replace(/[/\\]+$/, '')
+    const normPath = normalizePath(pathValue)
+    const normScope = normalizePath(scopePath)
     const pathCmp = process.platform === 'win32' ? normPath.toLowerCase() : normPath
     const scopeCmp = process.platform === 'win32' ? normScope.toLowerCase() : normScope
     if (pathCmp === scopeCmp) return true
-    const sep = normScope.includes('\\') ? '\\' : '/'
-    const prefix = scopeCmp.endsWith(sep) ? scopeCmp : scopeCmp + sep
+    const sep = scopeCmp.includes('\\') ? '\\' : '/'
+    const prefix = /[\\/]+$/.test(scopeCmp) ? scopeCmp : scopeCmp + sep
     return pathCmp.startsWith(prefix)
   }
 
@@ -487,10 +488,15 @@ export class TagDatabase {
       const pathValue = row[0] as string
       if (!this.isPathInScope(pathValue, normalizedScope)) continue
       const kind = row[1] as PathKind
+      // לייצוא שיידע לשחזר גם תגים בירושה: ב-export נשמור ב-`directTags`
+      // את סט התגיות האפקטיבי עבור הנתיב (גם אם זה folder).
+      const effectiveTagIds = this.effectiveTagIdsForFile(pathValue, pathTagMap, exclusionMap)
       entries.push({
         path: pathValue,
         kind,
-        directTags: this.tagNamesFromIdSet(pathTagMap.get(pathValue), idToName),
+        // עבור קובץ: לייצא את כל התגיות האפקטיביות כך שבייבוא התגיות יהיו זמינות גם בקבצים,
+        // גם אם הן הגיעו בירושה מתיקייה.
+        directTags: this.tagNamesFromIdSet(effectiveTagIds, idToName),
         excludedInheritedTags: this.tagNamesFromIdSet(exclusionMap.get(pathValue), idToName)
       })
     }
@@ -536,6 +542,7 @@ export class TagDatabase {
     const existing = this.listAllPathsWithDirectTags()
     const existingMap = new Map(existing.map((e) => [normalizePath(e.path), e]))
     const idToName = this.loadTagIdToName()
+    const pathTagMap = this.loadPathTagIdMap()
     const exclusionMap = this.loadPathExclusionMap()
     let newEntries = 0
     let unchangedEntries = 0
@@ -551,7 +558,8 @@ export class TagDatabase {
         newEntries += 1
         continue
       }
-      const existingDirect = this.normalizeTagList(existingRow.tags)
+      const existingDirect =
+        this.tagNamesFromIdSet(this.effectiveTagIdsForFile(pathValue, pathTagMap, exclusionMap), idToName)
       const existingExcluded = this.normalizeTagList(this.tagNamesFromIdSet(exclusionMap.get(pathValue), idToName))
       const sameKind = existingRow.kind === entry.kind
       const sameDirect = this.areSameTags(existingDirect, importedDirect)
@@ -581,47 +589,95 @@ export class TagDatabase {
     }
   }
 
-  applyImportByScope(
+  async applyImportByScope(
     data: TagExportJson,
-    payload: TagImportApplyPayload
+    payload: TagImportApplyPayload,
+    opts?: { onProgress?: (p: { done: number; total: number }) => void }
   ): { appliedCount: number; skippedCount: number } {
     const normalizedScope = normalizePath(payload.scopePath)
-    const preview = this.previewImportByScope(data, normalizedScope)
     const conflictChoiceMap = new Map(
       Object.entries(payload.conflictChoicesByPath ?? {}).map(([k, v]) => [normalizePath(k), v])
     )
-    const conflictByPath = new Map(preview.conflicts.map((c) => [normalizePath(c.path), c]))
+
+    // חשוב: לא נריץ preview שוב בתוך apply (כדי לא להכפיל עלות ולמנוע "לא מגיב" על scopes גדולים).
+    // במקום זה נחשב התנגשויות תוך כדי ה-apply עצמו.
+    const idToName = this.loadTagIdToName()
+    const pathTagMap = this.loadPathTagIdMap()
+    const exclusionMap = this.loadPathExclusionMap()
+    const existing = this.listAllPathsWithDirectTags()
+    const existingMap = new Map(existing.map((e) => [normalizePath(e.path), e]))
+
+    const onProgress = opts?.onProgress
+    const totalInScope = data.entries.reduce((acc, e) => {
+      const p = normalizePath(e.path)
+      return acc + (this.isPathInScope(p, normalizedScope) ? 1 : 0)
+    }, 0)
+
     let appliedCount = 0
     let skippedCount = 0
 
+    let idx = 0
+    let doneInScope = 0
     for (const entryRaw of data.entries) {
+      idx += 1
       const entryPath = normalizePath(entryRaw.path)
       if (!this.isPathInScope(entryPath, normalizedScope)) continue
+
+      doneInScope += 1
+      if (onProgress && (doneInScope === totalInScope || doneInScope % 20 === 0)) {
+        onProgress({ done: doneInScope, total: totalInScope })
+      }
+
       const importedDirect = this.normalizeTagList(entryRaw.directTags ?? [])
       const importedExcluded = this.normalizeTagList(entryRaw.excludedInheritedTags ?? [])
-      const conflict = conflictByPath.get(entryPath)
-      const choice: ImportConflictChoice = conflict
-        ? (conflictChoiceMap.get(entryPath) ?? payload.defaultConflictChoice)
-        : 'replace'
-      if (conflict && choice === 'skip') {
-        skippedCount += 1
-        continue
+
+      const existingRow = existingMap.get(entryPath)
+
+      const existingDirect =
+        existingRow && entryRaw.kind === existingRow.kind
+          ? this.tagNamesFromIdSet(this.effectiveTagIdsForFile(entryPath, pathTagMap, exclusionMap), idToName)
+          : existingRow
+            ? this.tagNamesFromIdSet(this.effectiveTagIdsForFile(entryPath, pathTagMap, exclusionMap), idToName)
+            : []
+
+      const existingExcluded = this.normalizeTagList(this.tagNamesFromIdSet(exclusionMap.get(entryPath), idToName))
+      const sameKind = existingRow ? existingRow.kind === entryRaw.kind : false
+      const sameDirect = existingRow ? this.areSameTags(existingDirect, importedDirect) : false
+      const sameExcluded = existingRow ? this.areSameTags(existingExcluded, importedExcluded) : false
+      const isConflict = existingRow ? !(sameKind && sameDirect && sameExcluded) : false
+
+      if (isConflict) {
+        const choice: ImportConflictChoice = conflictChoiceMap.get(entryPath) ?? payload.defaultConflictChoice
+        if (choice === 'skip') {
+          skippedCount += 1
+          continue
+        }
+        if (choice === 'merge') {
+          const mergedDirect = this.unionTags(existingDirect, importedDirect)
+          const mergedExcluded = this.unionTags(existingExcluded, importedExcluded)
+          this.upsertPath(entryPath, entryRaw.kind)
+          this.setPathTags(entryPath, mergedDirect)
+          this.setPathExcludedTags(entryPath, mergedExcluded)
+          appliedCount += 1
+          continue
+        }
+        // replace
       }
-      if (conflict && choice === 'merge') {
-        const mergedDirect = this.unionTags(conflict.existingDirectTags, importedDirect)
-        const mergedExcluded = this.unionTags(conflict.existingExcludedInheritedTags, importedExcluded)
-        this.upsertPath(entryPath, entryRaw.kind)
-        this.setPathTags(entryPath, mergedDirect)
-        this.setPathExcludedTags(entryPath, mergedExcluded)
-        appliedCount += 1
-        continue
-      }
+
+      // new entry or non-conflicting replace.
       this.upsertPath(entryPath, entryRaw.kind)
       this.setPathTags(entryPath, importedDirect)
       this.setPathExcludedTags(entryPath, importedExcluded)
       appliedCount += 1
+
+      // כדי לא לחסום את ה-EventLoop בלוקים גדולים (מונע "לא מגיב"/מסך לבן).
+      // לא מייצר async overhead משמעותי כי זה קורה רק כל N רשומות.
+      if (idx % 200 === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
     }
 
+    onProgress?.({ done: doneInScope, total: totalInScope })
     return { appliedCount, skippedCount }
   }
 

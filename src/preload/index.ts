@@ -6,6 +6,7 @@ import type {
   TagImportApplyPayload,
   TagImportPreview,
   TagRow,
+  ImportProgress,
   UpdateCheckResult
 } from '../shared/types'
 
@@ -51,6 +52,11 @@ const api = {
       cb(payload)
     ipcRenderer.on('index:progress', handler)
     return () => ipcRenderer.removeListener('index:progress', handler)
+  },
+  onImportProgress: (cb: (p: ImportProgress) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: ImportProgress) => cb(payload)
+    ipcRenderer.on('import:progress', handler)
+    return () => ipcRenderer.removeListener('import:progress', handler)
   },
   pickFiles: () => ipcRenderer.invoke('dialog:pick-files') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => ipcRenderer.invoke('dialog:pick-folders') as Promise<{ path: string; kind: PathKind }[] | null>,

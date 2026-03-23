@@ -42,6 +42,11 @@ export interface IndexProgress {
   currentPath: string
 }
 
+export interface ImportProgress {
+  done: number
+  total: number
+}
+
 export interface TagExportEntry {
   path: string
   kind: PathKind
