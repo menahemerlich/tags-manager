@@ -6,8 +6,16 @@ import type {
   TagImportApplyPayload,
   TagImportPreview,
   TagRow,
+  TagFolderRow,
   ImportProgress,
-  UpdateCheckResult
+  FaceAddEmbeddingPayload,
+  FaceDetection,
+  FacePersonEmbeddings,
+  UpdateCheckResult,
+  FaceAnalyzeAndMatchResponse,
+  FaceAnalyzeAndMatchErrorResponse,
+  FaceEmbeddingMetaRow,
+  FaceReplaceEmbeddingPayload
 } from '../shared/types'
 
 const api = {
@@ -26,6 +34,14 @@ const api = {
   setPathTags: (path: string, tagNames: string[]) =>
     ipcRenderer.invoke('paths:set-tags', { path, tagNames }) as Promise<{ ok: true }>,
   listTags: () => ipcRenderer.invoke('tags:list') as Promise<TagRow[]>,
+  listTagFolders: () => ipcRenderer.invoke('tag-folders:list') as Promise<TagFolderRow[]>,
+  createTagFolder: (name: string) =>
+    ipcRenderer.invoke('tag-folders:create', name) as Promise<{ ok: true; id: number } | { ok: false; error: string }>,
+  deleteTagFolder: (id: number) => ipcRenderer.invoke('tag-folders:delete', id) as Promise<{ ok: true }>,
+  setTagFolderForTag: (tagId: number, folderId: number | null) =>
+    ipcRenderer.invoke('tag-folders:set-tag-folder', { tagId, folderId }) as Promise<
+      { ok: true } | { ok: false; error: string }
+    >,
   renameTag: (id: number, name: string) =>
     ipcRenderer.invoke('tags:rename', { id, name }) as Promise<{ ok: true } | { ok: false; error: string }>,
   deleteTag: (id: number) => ipcRenderer.invoke('tags:delete', id) as Promise<{ ok: true }>,
@@ -46,6 +62,26 @@ const api = {
     ipcRenderer.invoke('tags:import-apply', payload) as Promise<
       { ok: true; appliedCount: number; skippedCount: number } | { ok: false; error: string }
     >,
+  getFacePeopleEmbeddings: () =>
+    ipcRenderer.invoke('faces:get-people-embeddings') as Promise<FacePersonEmbeddings[]>,
+  addFaceEmbedding: (payload: FaceAddEmbeddingPayload) =>
+    ipcRenderer.invoke('faces:add-embedding', payload) as Promise<
+      { ok: true } | { ok: false; error: string }
+    >,
+  analyzeFacesInImage: (imagePath: string) =>
+    ipcRenderer.invoke('faces:analyze-image', imagePath) as Promise<
+      { ok: true; faces: FaceDetection[] } | { ok: false; error: string }
+    >,
+  analyzeAndMatchFacesInImage: (imagePath: string) =>
+    ipcRenderer.invoke('faces:analyze-and-match-image', imagePath) as Promise<
+      FaceAnalyzeAndMatchResponse | FaceAnalyzeAndMatchErrorResponse
+    >,
+  listFaceEmbeddingsMeta: () =>
+    ipcRenderer.invoke('faces:list-embeddings-meta') as Promise<FaceEmbeddingMetaRow[]>,
+  replaceFaceEmbedding: (payload: FaceReplaceEmbeddingPayload) =>
+    ipcRenderer.invoke('faces:replace-embedding', payload) as Promise<
+      { ok: true } | { ok: false; error: string }
+    >,
   getAppVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
   onIndexProgress: (cb: (p: { done: number; total: number; currentPath: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { done: number; total: number; currentPath: string }) =>
@@ -61,6 +97,8 @@ const api = {
   pickFiles: () => ipcRenderer.invoke('dialog:pick-files') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => ipcRenderer.invoke('dialog:pick-folders') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => ipcRenderer.invoke('dialog:pick-folder') as Promise<string | null>,
+  pickImage: () => ipcRenderer.invoke('dialog:pick-image') as Promise<string | null>,
+  getImageDataUrl: (filePath: string) => ipcRenderer.invoke('files:image-data-url', filePath) as Promise<string | null>,
   showInFolder: (filePath: string) => ipcRenderer.invoke('shell:show-in-folder', filePath) as Promise<void>,
   openPath: (filePath: string) => ipcRenderer.invoke('shell:open-path', filePath) as Promise<string>
 }

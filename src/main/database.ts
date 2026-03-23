@@ -15,8 +15,15 @@ import type {
   TagImportApplyPayload,
   TagImportConflict,
   TagImportPreview,
-  TagRow
+  TagRow,
+  TagFolderRow,
+  FaceAddEmbeddingPayload,
+  FaceEmbeddingMetaRow,
+  FaceMatchCandidate,
+  FacePersonEmbeddings,
+  FaceReplaceEmbeddingPayload
 } from '../shared/types'
+import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
 
 const SEARCH_RESULT_LIMIT = 5000
 
@@ -41,6 +48,84 @@ function lastInsertRowid(db: Database): number {
   const r = db.exec('SELECT last_insert_rowid() AS id')
   const v = r[0]?.values?.[0]?.[0]
   return typeof v === 'number' ? v : Number(v)
+}
+
+function toNumericArray(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return []
+  const out: number[] = []
+  for (const value of raw) {
+    const num = Number(value)
+    if (Number.isFinite(num)) out.push(num)
+  }
+  return out
+}
+
+function l2Normalize(v: number[]): number[] {
+  if (v.length === 0) return v
+  let sum = 0
+  for (const x of v) sum += x * x
+  const n = Math.sqrt(sum)
+  if (!Number.isFinite(n) || n <= 0) return v
+  return v.map((x) => x / n)
+}
+
+function cosineDistance(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length)
+  if (len === 0) return 1
+  let dot = 0
+  for (let i = 0; i < len; i += 1) dot += a[i] * b[i]
+  return 1 - dot
+}
+
+function cosineSimilarity(a: number[] | Float32Array, b: number[] | Float32Array): number {
+  const len = Math.min(a.length, b.length)
+  if (len === 0) return 0
+  let dot = 0
+  for (let i = 0; i < len; i += 1) dot += a[i] * b[i]
+  return dot
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return Number.POSITIVE_INFINITY
+  let sum = 0
+  for (const value of values) sum += value
+  return sum / values.length
+}
+
+function getDynamicThreshold(sampleCount: number): number {
+  if (sampleCount <= 2) return 0.35
+  if (sampleCount <= 5) return 0.42
+  if (sampleCount <= 10) return 0.48
+  return 0.52
+}
+
+function toFloat32Blob(values: Float32Array): Uint8Array {
+  return new Uint8Array(values.buffer.slice(0))
+}
+
+function fromFloat32Blob(raw: unknown): Float32Array | null {
+  if (!(raw instanceof Uint8Array)) return null
+  if (raw.byteLength === 0 || raw.byteLength % 4 !== 0) return null
+  const copy = raw.slice()
+  return new Float32Array(copy.buffer, copy.byteOffset, copy.byteLength / 4)
+}
+
+function vectorMean(vectors: number[][]): number[] {
+  if (vectors.length === 0) return []
+  const dim = vectors[0]?.length ?? 0
+  if (dim === 0) return []
+  const sum = new Array(dim).fill(0)
+  for (const vec of vectors) {
+    for (let i = 0; i < dim; i += 1) sum[i] += vec[i] ?? 0
+  }
+  for (let i = 0; i < dim; i += 1) sum[i] /= vectors.length
+  return sum
+}
+
+function toConfidenceLabel(confidence: number): 'high' | 'probable' | 'uncertain' {
+  if (confidence >= 0.9) return 'high'
+  if (confidence >= 0.7) return 'probable'
+  return 'uncertain'
 }
 
 export class TagDatabase {
@@ -138,8 +223,67 @@ export class TagDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_path_tags_tag ON path_tags(tag_id);
       CREATE INDEX IF NOT EXISTS idx_paths_kind ON paths(kind);
+
+      CREATE TABLE IF NOT EXISTS tag_folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS tag_folder_tags (
+        folder_id INTEGER NOT NULL,
+        tag_id INTEGER NOT NULL UNIQUE,
+        PRIMARY KEY (folder_id, tag_id),
+        FOREIGN KEY (folder_id) REFERENCES tag_folders(id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tag_folder_tags_folder ON tag_folder_tags(folder_id);
+      CREATE INDEX IF NOT EXISTS idx_tag_folder_tags_tag ON tag_folder_tags(tag_id);
+
+      CREATE TABLE IF NOT EXISTS face_people (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS face_embeddings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_id INTEGER NOT NULL,
+        embedding_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (person_id) REFERENCES face_people(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS person_profiles (
+        person_id INTEGER PRIMARY KEY,
+        medoid BLOB NOT NULL,
+        trimmed_mean BLOB NOT NULL,
+        sample_count INTEGER NOT NULL,
+        last_updated TEXT NOT NULL,
+        FOREIGN KEY (person_id) REFERENCES face_people(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_face_embeddings_person ON face_embeddings(person_id);
     `)
+    this.ensureFaceEmbeddingSchema()
     this.schedulePersist()
+  }
+
+  private ensureFaceEmbeddingSchema(): void {
+    const cols = this.db.exec('PRAGMA table_info(face_embeddings)')
+    const names = new Set<string>()
+    for (const row of cols[0]?.values ?? []) {
+      const colName = row[1]
+      if (typeof colName === 'string') names.add(colName)
+    }
+
+    if (!names.has('model_id')) {
+      this.db.run('ALTER TABLE face_embeddings ADD COLUMN model_id TEXT')
+    }
+    if (!names.has('embedding_dim')) {
+      this.db.run('ALTER TABLE face_embeddings ADD COLUMN embedding_dim INTEGER')
+    }
   }
 
   upsertPath(absPath: string, kind: PathKind): number {
@@ -213,6 +357,312 @@ export class TagDatabase {
     return { id, name: n }
   }
 
+  private getOrCreateFacePerson(name: string): { id: number; name: string } {
+    const n = normalizeTagName(name)
+    if (!n) throw new Error('Empty person name')
+    const sel = this.db.prepare('SELECT id, name FROM face_people WHERE name = ? COLLATE NOCASE')
+    sel.bind([n])
+    if (sel.step()) {
+      const row = sel.get()
+      sel.free()
+      return { id: row[0] as number, name: row[1] as string }
+    }
+    sel.free()
+    this.db.run('INSERT INTO face_people (name) VALUES (?)', [n])
+    const id = lastInsertRowid(this.db)
+    this.schedulePersist()
+    return { id, name: n }
+  }
+
+  private listPersonEmbeddingsForModel(personId: number, modelId: string, expectedDim?: number): number[][] {
+    const stmt = this.db.prepare(
+      `SELECT embedding_json, embedding_dim, model_id
+       FROM face_embeddings
+       WHERE person_id = ?
+       ORDER BY id`
+    )
+    stmt.bind([personId])
+    const embeddings: number[][] = []
+    while (stmt.step()) {
+      const row = stmt.get()
+      const embeddingRaw = row[0]
+      const rowDim = typeof row[1] === 'number' ? row[1] : Number(row[1] ?? 0)
+      const rowModelId = typeof row[2] === 'string' ? row[2] : null
+      if (rowModelId && rowModelId !== modelId) continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(String(embeddingRaw)) as unknown
+      } catch {
+        parsed = null
+      }
+      const emb = l2Normalize(toNumericArray(parsed))
+      if (emb.length === 0) continue
+      const dim = rowDim > 0 ? rowDim : emb.length
+      if (expectedDim !== undefined && dim !== expectedDim) continue
+      embeddings.push(emb)
+    }
+    stmt.free()
+    return embeddings
+  }
+
+  private recomputePersonProfile(personId: number, modelId: string, expectedDim?: number): void {
+    const embeddings = this.listPersonEmbeddingsForModel(personId, modelId, expectedDim)
+    if (embeddings.length === 0) {
+      this.db.run('DELETE FROM person_profiles WHERE person_id = ?', [personId])
+      return
+    }
+
+    const dim = embeddings[0]?.length ?? 0
+    if (dim === 0) return
+
+    const centroid = l2Normalize(vectorMean(embeddings))
+    const removeCount = Math.floor(embeddings.length * 0.1)
+    const ranked = embeddings
+      .map((emb, idx) => ({ idx, dist: cosineDistance(emb, centroid) }))
+      .sort((a, b) => b.dist - a.dist)
+    const outlierIdx = new Set<number>(ranked.slice(0, removeCount).map((x) => x.idx))
+    const trimmedVectors = embeddings.filter((_, idx) => !outlierIdx.has(idx))
+    const baseVectors = trimmedVectors.length > 0 ? trimmedVectors : embeddings
+    const trimmedMean = new Float32Array(l2Normalize(vectorMean(baseVectors)))
+
+    let medoid = embeddings[0]
+    let medoidScore = Number.POSITIVE_INFINITY
+    for (let i = 0; i < embeddings.length; i += 1) {
+      const current = embeddings[i]
+      let sumDist = 0
+      for (let j = 0; j < embeddings.length; j += 1) {
+        if (i === j) continue
+        sumDist += cosineDistance(current, embeddings[j])
+      }
+      const avgDist = embeddings.length > 1 ? sumDist / (embeddings.length - 1) : 0
+      if (avgDist < medoidScore) {
+        medoidScore = avgDist
+        medoid = current
+      }
+    }
+    const medoidVec = new Float32Array(medoid)
+
+    this.db.run(
+      `INSERT INTO person_profiles (person_id, medoid, trimmed_mean, sample_count, last_updated)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(person_id) DO UPDATE SET
+         medoid = excluded.medoid,
+         trimmed_mean = excluded.trimmed_mean,
+         sample_count = excluded.sample_count,
+         last_updated = excluded.last_updated`,
+      [personId, toFloat32Blob(medoidVec), toFloat32Blob(trimmedMean), embeddings.length]
+    )
+  }
+
+  addFaceEmbedding(payload: FaceAddEmbeddingPayload): void {
+    const n = normalizeTagName(payload.name)
+    if (!n) throw new Error('Empty person name')
+    const descriptor = toNumericArray(payload.descriptor)
+    if (descriptor.length === 0) throw new Error('Empty descriptor')
+    const modelId = normalizeTagName(payload.modelId)
+    if (!modelId) throw new Error('Missing modelId')
+    const person = this.getOrCreateFacePerson(n)
+    const descriptorJson = JSON.stringify(descriptor)
+    this.db.run('INSERT INTO face_embeddings (person_id, embedding_json, model_id, embedding_dim) VALUES (?, ?, ?, ?)', [
+      person.id,
+      descriptorJson,
+      modelId,
+      descriptor.length
+    ])
+    this.recomputePersonProfile(person.id, modelId, descriptor.length)
+    this.schedulePersist()
+  }
+
+  listFacePeopleEmbeddings(): FacePersonEmbeddings[] {
+    const stmt = this.db.prepare(
+      `SELECT p.id, p.name, e.embedding_json
+       FROM face_people p
+       JOIN face_embeddings e ON e.person_id = p.id
+       ORDER BY p.name COLLATE NOCASE, e.id`
+    )
+    const outMap = new Map<number, FacePersonEmbeddings>()
+    while (stmt.step()) {
+      const r = stmt.get()
+      const personId = r[0] as number
+      const name = r[1] as string
+      const embeddingRaw = r[2] as string
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(embeddingRaw) as unknown
+      } catch {
+        parsed = null
+      }
+      const embedding = toNumericArray(parsed)
+      let row = outMap.get(personId)
+      if (!row) {
+        row = { personId, name, embeddings: [] }
+        outMap.set(personId, row)
+      }
+      row.embeddings.push(embedding)
+    }
+    stmt.free()
+    return [...outMap.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  matchFaceDescriptors(descriptors: number[][], modelId = FACE_EMBEDDING_MODEL_ID): (FaceMatchCandidate | null)[] {
+    const queryDescs = descriptors.map((d) => {
+      const normalized = l2Normalize(toNumericArray(d))
+      return normalized.length > 0 ? normalized : null
+    })
+    const firstValid = queryDescs.find((d) => d !== null)
+    if (!firstValid) return queryDescs.map(() => null)
+
+    const dim = firstValid.length
+    if (dim === 0) return queryDescs.map(() => null)
+
+    const profilesStmt = this.db.prepare(
+      `SELECT person_id, medoid, trimmed_mean, sample_count, last_updated
+       FROM person_profiles`
+    )
+    const profilesByPerson = new Map<number, { medoid: Float32Array; trimmedMean: Float32Array; sampleCount: number }>()
+    while (profilesStmt.step()) {
+      const row = profilesStmt.get()
+      const personId = Number(row[0])
+      const medoid = fromFloat32Blob(row[1])
+      const trimmedMean = fromFloat32Blob(row[2])
+      const sampleCount = Number(row[3] ?? 0)
+      if (!medoid || !trimmedMean) continue
+      if (medoid.length !== dim || trimmedMean.length !== dim) continue
+      profilesByPerson.set(personId, { medoid, trimmedMean, sampleCount })
+    }
+    profilesStmt.free()
+
+    const stmt = this.db.prepare(
+      `SELECT p.id, p.name, e.embedding_json, e.model_id, e.embedding_dim
+       FROM face_people p
+       JOIN face_embeddings e ON e.person_id = p.id
+       ORDER BY p.name COLLATE NOCASE, e.id`
+    )
+
+    const byPerson = new Map<number, { personId: number; name: string; embeddings: number[][] }>()
+    while (stmt.step()) {
+      const row = stmt.get()
+      const personId = Number(row[0])
+      const name = String(row[1])
+      const embeddingRaw = row[2]
+      const rowModelId = typeof row[3] === 'string' ? row[3] : null
+      const rowDim = typeof row[4] === 'number' ? row[4] : Number(row[4] ?? 0)
+
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(String(embeddingRaw)) as unknown
+      } catch {
+        parsed = null
+      }
+      const embedding = l2Normalize(toNumericArray(parsed))
+      if (embedding.length === 0) continue
+
+      const effectiveDim = rowDim > 0 ? rowDim : embedding.length
+      if (effectiveDim !== dim) continue
+      if (rowModelId && rowModelId !== modelId) continue
+
+      let person = byPerson.get(personId)
+      if (!person) {
+        person = { personId, name, embeddings: [] }
+        byPerson.set(personId, person)
+      }
+      person.embeddings.push(embedding)
+    }
+    stmt.free()
+
+    const prepared = [...byPerson.values()].filter((p) => p.embeddings.length > 0)
+    const matches: (FaceMatchCandidate | null)[] = []
+
+    for (const desc of queryDescs) {
+      if (!desc) {
+        matches.push(null)
+        continue
+      }
+      let best: FaceMatchCandidate | null = null
+      for (const person of prepared) {
+        const bestIndividual = person.embeddings.reduce((acc, emb) => Math.max(acc, cosineSimilarity(desc, emb)), -1)
+        const profile = profilesByPerson.get(person.personId)
+        const score = profile
+          ? 0.4 * cosineSimilarity(desc, profile.medoid) +
+            0.4 * cosineSimilarity(desc, profile.trimmedMean) +
+            0.2 * bestIndividual
+          : bestIndividual
+        const sampleCount = profile?.sampleCount ?? person.embeddings.length
+        const threshold = getDynamicThreshold(sampleCount)
+        if (score < threshold) continue
+
+        if (!best || score > best.confidence) {
+          best = {
+            personId: person.personId,
+            name: person.name,
+            distance: 1 - score,
+            sampleCount,
+            confidence: score,
+            threshold,
+            confidenceLabel: toConfidenceLabel(score)
+          }
+        }
+      }
+      matches.push(best)
+    }
+
+    return matches
+  }
+
+  listFaceEmbeddingsMeta(): FaceEmbeddingMetaRow[] {
+    const stmt = this.db.prepare(
+      `SELECT e.id, p.id, p.name, e.model_id, e.embedding_dim, e.embedding_json, e.created_at
+       FROM face_embeddings e
+       JOIN face_people p ON p.id = e.person_id
+       ORDER BY e.id`
+    )
+    const rows: FaceEmbeddingMetaRow[] = []
+    while (stmt.step()) {
+      const r = stmt.get()
+      const embeddingId = Number(r[0])
+      const personId = Number(r[1])
+      const name = String(r[2])
+      const modelId = typeof r[3] === 'string' ? r[3] : null
+      const rawDim = Number(r[4] ?? 0)
+      const createdAt = String(r[6])
+
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(String(r[5])) as unknown
+      } catch {
+        parsed = null
+      }
+      const emb = toNumericArray(parsed)
+      const embeddingDim = rawDim > 0 ? rawDim : emb.length
+
+      rows.push({ embeddingId, personId, name, modelId, embeddingDim, createdAt })
+    }
+    stmt.free()
+    return rows
+  }
+
+  replaceFaceEmbedding(payload: FaceReplaceEmbeddingPayload): void {
+    const embeddingId = Number(payload.embeddingId)
+    if (!Number.isFinite(embeddingId) || embeddingId <= 0) throw new Error('Invalid embedding id')
+    const descriptor = toNumericArray(payload.descriptor)
+    if (descriptor.length === 0) throw new Error('Empty descriptor')
+    const modelId = normalizeTagName(payload.modelId)
+    if (!modelId) throw new Error('Missing modelId')
+    const personStmt = this.db.prepare('SELECT person_id FROM face_embeddings WHERE id = ?')
+    personStmt.bind([embeddingId])
+    const personId = personStmt.step() ? Number(personStmt.get()[0]) : null
+    personStmt.free()
+    if (!personId) throw new Error('Embedding not found')
+    this.db.run('UPDATE face_embeddings SET embedding_json = ?, model_id = ?, embedding_dim = ? WHERE id = ?', [
+      JSON.stringify(descriptor),
+      modelId,
+      descriptor.length,
+      embeddingId
+    ])
+    this.recomputePersonProfile(personId, modelId, descriptor.length)
+    this.schedulePersist()
+  }
+
   listTags(): TagRow[] {
     const stmt = this.db.prepare('SELECT id, name, created_at FROM tags ORDER BY name COLLATE NOCASE')
     const out: TagRow[] = []
@@ -222,6 +672,58 @@ export class TagDatabase {
     }
     stmt.free()
     return out
+  }
+
+  listTagFolders(): TagFolderRow[] {
+    const folderStmt = this.db.prepare('SELECT id, name, created_at FROM tag_folders ORDER BY name COLLATE NOCASE')
+    const folders = new Map<number, TagFolderRow>()
+    while (folderStmt.step()) {
+      const r = folderStmt.get()
+      const id = Number(r[0])
+      folders.set(id, { id, name: String(r[1]), created_at: String(r[2]), tagIds: [] })
+    }
+    folderStmt.free()
+
+    if (folders.size === 0) return []
+
+    const linkStmt = this.db.prepare('SELECT folder_id, tag_id FROM tag_folder_tags')
+    while (linkStmt.step()) {
+      const r = linkStmt.get()
+      const folderId = Number(r[0])
+      const tagId = Number(r[1])
+      const folder = folders.get(folderId)
+      if (!folder) continue
+      folder.tagIds.push(tagId)
+    }
+    linkStmt.free()
+
+    return [...folders.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  createTagFolder(name: string): number {
+    const n = normalizeTagName(name)
+    if (!n) throw new Error('Empty folder name')
+    this.db.run('INSERT INTO tag_folders (name) VALUES (?)', [n])
+    const id = lastInsertRowid(this.db)
+    this.schedulePersist()
+    return id
+  }
+
+  deleteTagFolder(folderId: number): void {
+    this.db.run('DELETE FROM tag_folders WHERE id = ?', [folderId])
+    this.schedulePersist()
+  }
+
+  setTagFolderForTag(tagId: number, folderId: number | null): void {
+    const tid = Number(tagId)
+    if (!Number.isFinite(tid) || tid <= 0) throw new Error('Invalid tag id')
+    this.db.run('DELETE FROM tag_folder_tags WHERE tag_id = ?', [tid])
+    if (folderId !== null) {
+      const fid = Number(folderId)
+      if (!Number.isFinite(fid) || fid <= 0) throw new Error('Invalid folder id')
+      this.db.run('INSERT INTO tag_folder_tags (folder_id, tag_id) VALUES (?, ?)', [fid, tid])
+    }
+    this.schedulePersist()
   }
 
   renameTag(tagId: number, newName: string): void {

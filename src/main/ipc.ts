@@ -4,13 +4,32 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { TagDatabase } from './database'
 import { indexFolderFiles } from './fileIndexer'
 import { loadSettings, saveSettings } from './settingsStore'
-import type { AppSettings, TagExportJson, TagImportApplyPayload } from '../shared/types'
+import type {
+  AppSettings,
+  FaceAddEmbeddingPayload,
+  FaceDetectionWithCandidate,
+  FaceReplaceEmbeddingPayload,
+  TagExportJson,
+  TagImportApplyPayload
+} from '../shared/types'
 import { checkGithubRelease } from './updates'
 import { normalizePath } from '../shared/pathUtils'
 import { normalizeTagName } from '../shared/tagNormalize'
 import type { PathKind } from '../shared/types'
+import { analyzeImageWithOnnx } from './faceEngine'
+import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
 
 let indexAbort: AbortController | null = null
+
+function mimeFromFilePath(filePath: string): string {
+  const p = filePath.toLowerCase()
+  if (p.endsWith('.png')) return 'image/png'
+  if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg'
+  if (p.endsWith('.webp')) return 'image/webp'
+  if (p.endsWith('.gif')) return 'image/gif'
+  if (p.endsWith('.bmp')) return 'image/bmp'
+  return 'application/octet-stream'
+}
 
 function parseImportJson(raw: string): TagExportJson {
   let parsed: unknown
@@ -134,6 +153,33 @@ export function registerIpcHandlers(
     return getDb().listTags()
   })
 
+  ipcMain.handle('tag-folders:list', async () => {
+    return getDb().listTagFolders()
+  })
+
+  ipcMain.handle('tag-folders:create', async (_e, name: string) => {
+    try {
+      const id = getDb().createTagFolder(name)
+      return { ok: true as const, id }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
+  ipcMain.handle('tag-folders:delete', async (_e, id: number) => {
+    getDb().deleteTagFolder(id)
+    return { ok: true as const }
+  })
+
+  ipcMain.handle('tag-folders:set-tag-folder', async (_e, payload: { tagId: number; folderId: number | null }) => {
+    try {
+      getDb().setTagFolderForTag(payload.tagId, payload.folderId)
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
   ipcMain.handle('tags:rename', async (_e, payload: { id: number; name: string }) => {
     try {
       getDb().renameTag(payload.id, payload.name)
@@ -146,6 +192,66 @@ export function registerIpcHandlers(
   ipcMain.handle('tags:delete', async (_e, id: number) => {
     getDb().deleteTag(id)
     return { ok: true as const }
+  })
+
+  ipcMain.handle('faces:get-people-embeddings', async () => {
+    return getDb().listFacePeopleEmbeddings()
+  })
+
+  ipcMain.handle('faces:add-embedding', async (_e, payload: FaceAddEmbeddingPayload) => {
+    try {
+      if (payload.modelId !== FACE_EMBEDDING_MODEL_ID) {
+        return { ok: false as const, error: 'ניתן לשמור embedding רק ממודל ONNX הפעיל' }
+      }
+      getDb().addFaceEmbedding(payload)
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
+  ipcMain.handle('faces:analyze-and-match-image', async (_e, imagePath: string) => {
+    try {
+      const p = normalizePath(imagePath)
+      const faces = await analyzeImageWithOnnx(p)
+      const matches = getDb().matchFaceDescriptors(
+        faces.map((f) => f.descriptor),
+        FACE_EMBEDDING_MODEL_ID
+      )
+      const merged: FaceDetectionWithCandidate[] = faces.map((face, i) => ({
+        ...face,
+        candidate: matches[i] ?? null
+      }))
+      return { ok: true as const, modelId: FACE_EMBEDDING_MODEL_ID, faces: merged }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
+  ipcMain.handle('faces:analyze-image', async (_e, imagePath: string) => {
+    try {
+      const p = normalizePath(imagePath)
+      const faces = await analyzeImageWithOnnx(p)
+      return { ok: true as const, faces }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
+  ipcMain.handle('faces:list-embeddings-meta', async () => {
+    return getDb().listFaceEmbeddingsMeta()
+  })
+
+  ipcMain.handle('faces:replace-embedding', async (_e, payload: FaceReplaceEmbeddingPayload) => {
+    try {
+      if (payload.modelId !== FACE_EMBEDDING_MODEL_ID) {
+        return { ok: false as const, error: 'החלפת embedding מותרת רק למודל ONNX הפעיל' }
+      }
+      getDb().replaceFaceEmbedding(payload)
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
   })
 
   ipcMain.handle('tags:export-json', async (_e, scopePath: string) => {
@@ -280,5 +386,29 @@ export function registerIpcHandlers(
     })
     if (r.canceled || r.filePaths.length === 0) return null
     return r.filePaths[0] as string
+  })
+
+  ipcMain.handle('dialog:pick-image', async () => {
+    const win = getWindow()
+    const r = await dialog.showOpenDialog(win ?? undefined, {
+      title: 'בחר תמונה',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }
+      ]
+    })
+    if (r.canceled || r.filePaths.length === 0) return null
+    return r.filePaths[0] as string
+  })
+
+  ipcMain.handle('files:image-data-url', async (_e, filePath: string) => {
+    try {
+      const p = normalizePath(filePath)
+      const bytes = readFileSync(p)
+      const mime = mimeFromFilePath(p)
+      return `data:${mime};base64,${bytes.toString('base64')}`
+    } catch {
+      return null
+    }
   })
 }

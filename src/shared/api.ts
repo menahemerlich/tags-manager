@@ -6,7 +6,15 @@ import type {
   TagImportApplyPayload,
   TagImportPreview,
   TagRow,
-  UpdateCheckResult
+  TagFolderRow,
+  UpdateCheckResult,
+  FaceAddEmbeddingPayload,
+  FaceDetection,
+  FacePersonEmbeddings,
+  FaceAnalyzeAndMatchResponse,
+  FaceAnalyzeAndMatchErrorResponse,
+  FaceEmbeddingMetaRow,
+  FaceReplaceEmbeddingPayload
 } from './types'
 
 /** Shape of `window.api` exposed from preload (for renderer typing). */
@@ -23,6 +31,10 @@ export interface ElectronApi {
   removeTagFromPath: (path: string, tagName: string) => Promise<{ ok: true } | { ok: false; error: string }>,
   setPathTags: (path: string, tagNames: string[]) => Promise<{ ok: true }>,
   listTags: () => Promise<TagRow[]>
+  listTagFolders: () => Promise<TagFolderRow[]>
+  createTagFolder: (name: string) => Promise<{ ok: true; id: number } | { ok: false; error: string }>
+  deleteTagFolder: (id: number) => Promise<{ ok: true }>
+  setTagFolderForTag: (tagId: number, folderId: number | null) => Promise<{ ok: true } | { ok: false; error: string }>
   renameTag: (id: number, name: string) => Promise<{ ok: true } | { ok: false; error: string }>
   deleteTag: (id: number) => Promise<{ ok: true }>
   search: (tagNames: string[]) => Promise<SearchResult>
@@ -34,6 +46,12 @@ export interface ElectronApi {
   importTagsApply: (
     payload: TagImportApplyPayload
   ) => Promise<{ ok: true; appliedCount: number; skippedCount: number } | { ok: false; error: string }>
+  getFacePeopleEmbeddings: () => Promise<FacePersonEmbeddings[]>
+  addFaceEmbedding: (payload: FaceAddEmbeddingPayload) => Promise<{ ok: true } | { ok: false; error: string }>
+  analyzeFacesInImage: (imagePath: string) => Promise<{ ok: true; faces: FaceDetection[] } | { ok: false; error: string }>
+  analyzeAndMatchFacesInImage: (imagePath: string) => Promise<FaceAnalyzeAndMatchResponse | FaceAnalyzeAndMatchErrorResponse>
+  listFaceEmbeddingsMeta: () => Promise<FaceEmbeddingMetaRow[]>
+  replaceFaceEmbedding: (payload: FaceReplaceEmbeddingPayload) => Promise<{ ok: true } | { ok: false; error: string }>
   getAppVersion: () => Promise<string>
   onIndexProgress: (
     cb: (p: { done: number; total: number; currentPath: string }) => void
@@ -42,6 +60,8 @@ export interface ElectronApi {
   pickFiles: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => Promise<string | null>,
+  pickImage: () => Promise<string | null>,
+  getImageDataUrl: (filePath: string) => Promise<string | null>,
   showInFolder: (filePath: string) => Promise<void>
   openPath: (filePath: string) => Promise<string>
 }

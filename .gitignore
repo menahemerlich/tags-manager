@@ -6,3 +6,10 @@ release
 *.log
 .DS_Store
 *.local
+
+# face-api model weights (downloaded on-demand via scripts/download-face-models.mjs)
+src/renderer/public/face-models/*
+!src/renderer/public/face-models/.gitkeep
+
+# ONNX face models (downloaded on-demand via scripts/download-onnx-face-models.mjs)
+resources/models/face/*.onnx
