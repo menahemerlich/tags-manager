@@ -1147,9 +1147,9 @@ tr.selected td {
 }
 
 .watermark-selection-overlay.blur {
-  border-color: rgba(103, 232, 249, 0.95);
-  background: rgba(103, 232, 249, 0.08);
-  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.15);
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
 .watermark-selection-overlay.circle {
@@ -1173,6 +1173,8 @@ tr.selected td {
 
 .watermark-feather-band-circle,
 .watermark-feather-band-rect,
+.watermark-feather-inner-circle,
+.watermark-feather-inner-rect,
 .watermark-feather-outer-circle,
 .watermark-feather-outer-rect {
   position: absolute;
@@ -1182,14 +1184,28 @@ tr.selected td {
 .watermark-feather-band-circle,
 .watermark-feather-band-rect {
   z-index: 2;
-  border: 1px solid rgba(103, 232, 249, 0.16);
-  background: rgba(103, 232, 249, 0.04);
+  border: none;
+  background: transparent;
 }
 
 .watermark-feather-outer-circle,
 .watermark-feather-outer-rect {
   z-index: 3;
   border: 1px dashed rgba(103, 232, 249, 0.72);
+}
+
+.watermark-feather-inner-circle,
+.watermark-feather-inner-rect {
+  z-index: 3;
+  border: 1px dashed rgba(103, 232, 249, 0.92);
+}
+
+.watermark-feather-inner-circle {
+  border-radius: 9999px;
+}
+
+.watermark-feather-inner-rect {
+  border-radius: 12px;
 }
 
 .watermark-crop-handle {

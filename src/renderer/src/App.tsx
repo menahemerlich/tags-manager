@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
+  BlurParams,
+  BlurSelection,
   FaceDetection,
   ImportConflictChoice,
   PathKind,
   SearchResultRow,
+  SelectionShape,
   TransferPackageProgress,
   TagFolderRow,
   TagImportPreview,
@@ -11,6 +14,12 @@ import type {
 } from '../../shared/types'
 import { FACE_EMBEDDING_MODEL_ID } from '../../shared/types'
 import { normalizeTagName } from '../../shared/tagNormalize'
+import {
+  createBlurPreviewSource,
+  createBlurredPreviewImageData,
+  renderBlurPreviewDataUrl,
+  type BlurPreviewSource
+} from './blurProcessor'
 import * as faceapi from 'face-api.js'
 import '@tensorflow/tfjs-backend-cpu'
 
@@ -19,7 +28,7 @@ type Tab = 'library' | 'search' | 'tags' | 'settings'
 type FaceTab = 'faces' | 'watermark'
 
 type WatermarkToolMode = 'none' | 'crop' | 'blur'
-type WatermarkSelectionShape = 'rect' | 'circle'
+type WatermarkSelectionShape = SelectionShape
 type WatermarkSelectionRect = { x: number; y: number; width: number; height: number }
 type WatermarkSelectionHandle = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
@@ -1760,6 +1769,8 @@ function WatermarkEditorTab() {
   const [blurFeather, setBlurFeather] = useState(24)
   const [focusSeparation, setFocusSeparation] = useState(45)
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.35)
+  const [processedPreviewSrc, setProcessedPreviewSrc] = useState<string | null>(null)
+  const [blurPreviewSourceKey, setBlurPreviewSourceKey] = useState(0)
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
   const [isExporting, setIsExporting] = useState(false)
   const [exportMsg, setExportMsg] = useState<string | null>(null)
@@ -1780,6 +1791,10 @@ function WatermarkEditorTab() {
     startClientY: number
     startRect: WatermarkSelectionRect
   } | null>(null)
+  const blurPreviewSourceRef = useRef<BlurPreviewSource | null>(null)
+  const blurredPreviewCacheRef = useRef<{ blurStrength: number; imageData: ImageData } | null>(null)
+  const blurPreviewFrameRef = useRef<number | null>(null)
+  const blurPreviewTimerRef = useRef<number | null>(null)
 
   const updateStageSize = useCallback(() => {
     const imgEl = baseImgRef.current
@@ -1854,22 +1869,6 @@ function WatermarkEditorTab() {
     [selectionShape]
   )
 
-  const blurStrengthPreviewPx = useMemo(() => {
-    const normalized = clampNumber(blurStrength, 0, 40) / 40
-    return clampNumber(Math.round(Math.pow(normalized, 1.45) * 36), 0, 36)
-  }, [blurStrength])
-
-  const blurBackdropFilter = useMemo(() => {
-    const brightness = clampNumber(100 - focusSeparation * 0.22, 62, 100)
-    const contrast = clampNumber(100 - focusSeparation * 0.28, 54, 100)
-    return `blur(${blurStrengthPreviewPx}px) brightness(${brightness}%) contrast(${contrast}%)`
-  }, [blurStrengthPreviewPx, focusSeparation])
-
-  const blurOverlayTint = useMemo(
-    () => `rgba(8, 12, 22, ${0.06 + focusSeparation / 500})`,
-    [focusSeparation]
-  )
-
   const blurFeatherPreviewPx = useMemo(() => {
     if (!selectionRect || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return 0
     const scaleX = stageSize.width / baseImageSize.width
@@ -1877,6 +1876,26 @@ function WatermarkEditorTab() {
     const minDimension = Math.max(1, Math.min(selectionRect.width * scaleX, selectionRect.height * scaleY))
     return clampNumber(Math.round(minDimension * 0.7 * (blurFeather / 100)), 0, Math.round(minDimension * 0.8))
   }, [baseImageSize, blurFeather, selectionRect, stageSize.height, stageSize.width])
+
+  const blurSelection = useMemo<BlurSelection | null>(() => {
+    if (!selectionRect) return null
+    return {
+      x: selectionRect.x,
+      y: selectionRect.y,
+      width: selectionRect.width,
+      height: selectionRect.height,
+      shape: selectionShape
+    }
+  }, [selectionRect, selectionShape])
+
+  const blurParams = useMemo<BlurParams>(
+    () => ({
+      blurStrength,
+      blurFeather,
+      focusSeparation
+    }),
+    [blurFeather, blurStrength, focusSeparation]
+  )
 
   const ensureSelectionRect = useCallback(() => {
     if (!baseImageSize) return
@@ -1914,12 +1933,24 @@ function WatermarkEditorTab() {
     setBlurFeather(24)
     setFocusSeparation(45)
     setWatermarkOpacity(0.35)
+    setProcessedPreviewSrc(null)
+    setBlurPreviewSourceKey(0)
     setStageSize({ width: 0, height: 0 })
     setIsExporting(false)
     setExportMsg(null)
     setEditorError(null)
     dragStateRef.current = null
     selectionDragStateRef.current = null
+    blurPreviewSourceRef.current = null
+    blurredPreviewCacheRef.current = null
+    if (blurPreviewFrameRef.current) {
+      window.cancelAnimationFrame(blurPreviewFrameRef.current)
+      blurPreviewFrameRef.current = null
+    }
+    if (blurPreviewTimerRef.current) {
+      window.clearTimeout(blurPreviewTimerRef.current)
+      blurPreviewTimerRef.current = null
+    }
   }
 
   useEffect(() => {
@@ -1950,10 +1981,107 @@ function WatermarkEditorTab() {
   }, [baseImageSrc, updateStageSize])
 
   useEffect(() => {
-    if (activeTool !== 'blur' || !baseImagePath || !selectionRect) {
+    let disposed = false
+
+    if (!baseImageSrc) {
+      blurPreviewSourceRef.current = null
+      blurredPreviewCacheRef.current = null
+      setProcessedPreviewSrc(null)
+      setBlurPreviewSourceKey(0)
       return
     }
-  }, [activeTool, baseImagePath, selectionRect])
+
+    void createBlurPreviewSource(baseImageSrc)
+      .then((source) => {
+        if (disposed) return
+        blurPreviewSourceRef.current = source
+        blurredPreviewCacheRef.current = null
+        setBlurPreviewSourceKey((prev) => prev + 1)
+        if (activeTool !== 'blur') {
+          setProcessedPreviewSrc(null)
+        }
+      })
+      .catch(() => {
+        if (disposed) return
+        blurPreviewSourceRef.current = null
+        blurredPreviewCacheRef.current = null
+        setProcessedPreviewSrc(null)
+        setBlurPreviewSourceKey(0)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [activeTool, baseImageSrc])
+
+  const requestBlurPreviewRender = useCallback(
+    (debounceMs: number) => {
+      if (blurPreviewFrameRef.current) {
+        window.cancelAnimationFrame(blurPreviewFrameRef.current)
+        blurPreviewFrameRef.current = null
+      }
+      if (blurPreviewTimerRef.current) {
+        window.clearTimeout(blurPreviewTimerRef.current)
+        blurPreviewTimerRef.current = null
+      }
+
+      if (activeTool !== 'blur' || !blurSelection) {
+        setProcessedPreviewSrc(null)
+        return
+      }
+
+      const render = () => {
+        const source = blurPreviewSourceRef.current
+        if (!source) return
+
+        const cached = blurredPreviewCacheRef.current
+        const blurredImageData =
+          cached && cached.blurStrength === blurParams.blurStrength
+            ? cached.imageData
+            : createBlurredPreviewImageData(source, blurParams)
+
+        if (!cached || cached.blurStrength !== blurParams.blurStrength) {
+          blurredPreviewCacheRef.current = { blurStrength: blurParams.blurStrength, imageData: blurredImageData }
+        }
+
+        setProcessedPreviewSrc(renderBlurPreviewDataUrl(source, blurredImageData, blurSelection, blurParams))
+      }
+
+      const scheduleFrame = () => {
+        blurPreviewFrameRef.current = window.requestAnimationFrame(() => {
+          blurPreviewFrameRef.current = null
+          render()
+        })
+      }
+
+      if (debounceMs > 0) {
+        blurPreviewTimerRef.current = window.setTimeout(scheduleFrame, debounceMs)
+      } else {
+        scheduleFrame()
+      }
+    },
+    [activeTool, blurParams, blurSelection]
+  )
+
+  useEffect(() => {
+    requestBlurPreviewRender(0)
+    return () => {
+      if (blurPreviewFrameRef.current) {
+        window.cancelAnimationFrame(blurPreviewFrameRef.current)
+        blurPreviewFrameRef.current = null
+      }
+    }
+  }, [activeTool, blurPreviewSourceKey, blurSelection, requestBlurPreviewRender])
+
+  useEffect(() => {
+    requestBlurPreviewRender(90)
+    return () => {
+      if (blurPreviewTimerRef.current) {
+        window.clearTimeout(blurPreviewTimerRef.current)
+        blurPreviewTimerRef.current = null
+      }
+    }
+  }, [blurParams, blurPreviewSourceKey, requestBlurPreviewRender])
 
   useEffect(() => {
     if (!baseImageSize || activeTool === 'none') return
@@ -2179,10 +2307,7 @@ function WatermarkEditorTab() {
       const res = await window.api.exportWatermarkedImage({
         baseImagePath,
         watermarkImagePath,
-        blurPreviewScale:
-          activeTool === 'blur' && baseImageSize && stageSize.width > 0 && stageSize.height > 0
-            ? Math.min(stageSize.width / baseImageSize.width, stageSize.height / baseImageSize.height)
-            : undefined,
+        blurPreviewScale: activeTool === 'blur' ? blurPreviewSourceRef.current?.scale : undefined,
         x: watermarkRect.x,
         y: watermarkRect.y,
         width: watermarkRect.width,
@@ -2262,8 +2387,8 @@ function WatermarkEditorTab() {
     }
   }, [activeTool, blurFeatherPreviewPx, displaySelectionRect, selectionShape])
 
-  const circleBlurMaskStyle = useMemo<CSSProperties | null>(() => {
-    if (!circleFeatherPreviewGeometry) return null
+  const circleFeatherBandStyle = useMemo<CSSProperties | null>(() => {
+    if (!circleFeatherPreviewGeometry || circleFeatherPreviewGeometry.feather <= 0) return null
     const outerRadiusX = Math.max(1, circleFeatherPreviewGeometry.outer.width / 2)
     const outerRadiusY = Math.max(1, circleFeatherPreviewGeometry.outer.height / 2)
     const innerRadiusX = Math.max(1, circleFeatherPreviewGeometry.inner.width / 2)
@@ -2275,69 +2400,16 @@ function WatermarkEditorTab() {
       6,
       100
     )
-    const mask = `radial-gradient(ellipse ${outerRadiusX}px ${outerRadiusY}px at ${centerX}px ${centerY}px, transparent 0, transparent ${innerPercent}%, black 100%)`
-    return {
-      backdropFilter: blurBackdropFilter,
-      WebkitBackdropFilter: blurBackdropFilter,
-      background: blurOverlayTint,
-      WebkitMaskImage: mask,
-      maskImage: mask
-    }
-  }, [blurBackdropFilter, blurOverlayTint, circleFeatherPreviewGeometry])
-
-  const blurPanes = useMemo(() => {
-    if (activeTool !== 'blur' || selectionShape !== 'rect' || !displaySelectionRect || stageSize.width <= 0 || stageSize.height <= 0) {
-      return []
-    }
-    const { left, top, width, height } = displaySelectionRect
-    const right = left + width
-    const bottom = top + height
-    const feather = blurFeatherPreviewPx
-    return [
-      {
-        left: 0,
-        top: 0,
-        width: stageSize.width,
-        height: top + feather,
-        maskImage:
-          feather > 0 ? `linear-gradient(to bottom, black calc(100% - ${feather}px), transparent 100%)` : undefined
-      },
-      {
-        left: 0,
-        top,
-        width: left + feather,
-        height,
-        maskImage:
-          feather > 0 ? `linear-gradient(to right, black calc(100% - ${feather}px), transparent 100%)` : undefined
-      },
-      {
-        left: Math.max(0, right - feather),
-        top,
-        width: Math.max(0, stageSize.width - right + feather),
-        height,
-        maskImage:
-          feather > 0 ? `linear-gradient(to left, black calc(100% - ${feather}px), transparent 100%)` : undefined
-      },
-      {
-        left: 0,
-        top: Math.max(0, bottom - feather),
-        width: stageSize.width,
-        height: Math.max(0, stageSize.height - bottom + feather),
-        maskImage:
-          feather > 0 ? `linear-gradient(to top, black calc(100% - ${feather}px), transparent 100%)` : undefined
-      }
-    ].filter((pane) => pane.width > 0 && pane.height > 0)
-  }, [activeTool, blurFeatherPreviewPx, displaySelectionRect, selectionShape, stageSize.height, stageSize.width])
-
-  const circleFeatherBandStyle = useMemo<CSSProperties | null>(() => {
-    if (!circleFeatherPreviewGeometry || circleFeatherPreviewGeometry.feather <= 0) return null
+    const ringMask = `radial-gradient(ellipse ${outerRadiusX}px ${outerRadiusY}px at ${centerX}px ${centerY}px, transparent 0, transparent ${innerPercent}%, black calc(${innerPercent}% + 0.6%), black calc(100% - 1px), transparent 100%)`
     return {
       left: circleFeatherPreviewGeometry.outer.left,
       top: circleFeatherPreviewGeometry.outer.top,
       width: circleFeatherPreviewGeometry.outer.width,
       height: circleFeatherPreviewGeometry.outer.height,
       borderRadius: '9999px',
-      boxShadow: `inset 0 0 0 ${circleFeatherPreviewGeometry.feather}px rgba(103, 232, 249, 0.12)`
+      background: 'rgba(103, 232, 249, 0.08)',
+      maskImage: ringMask,
+      WebkitMaskImage: ringMask
     }
   }, [circleFeatherPreviewGeometry])
 
@@ -2354,13 +2426,24 @@ function WatermarkEditorTab() {
 
   const rectFeatherBandStyle = useMemo<CSSProperties | null>(() => {
     if (!rectFeatherPreviewGeometry || rectFeatherPreviewGeometry.feather <= 0) return null
+    const feather = rectFeatherPreviewGeometry.feather
     return {
       left: rectFeatherPreviewGeometry.outer.left,
       top: rectFeatherPreviewGeometry.outer.top,
       width: rectFeatherPreviewGeometry.outer.width,
       height: rectFeatherPreviewGeometry.outer.height,
       borderRadius: '16px',
-      boxShadow: `inset 0 0 0 ${rectFeatherPreviewGeometry.feather}px rgba(103, 232, 249, 0.12)`
+      background: 'rgba(103, 232, 249, 0.08)',
+      maskImage: 'linear-gradient(#000 0 0), linear-gradient(#000 0 0)',
+      WebkitMaskImage: 'linear-gradient(#000 0 0), linear-gradient(#000 0 0)',
+      maskSize: `100% 100%, calc(100% - ${feather * 2}px) calc(100% - ${feather * 2}px)`,
+      WebkitMaskSize: `100% 100%, calc(100% - ${feather * 2}px) calc(100% - ${feather * 2}px)`,
+      maskPosition: `0 0, ${feather}px ${feather}px`,
+      WebkitMaskPosition: `0 0, ${feather}px ${feather}px`,
+      maskRepeat: 'no-repeat, no-repeat',
+      WebkitMaskRepeat: 'no-repeat, no-repeat',
+      maskComposite: 'exclude',
+      WebkitMaskComposite: 'xor'
     }
   }, [rectFeatherPreviewGeometry])
 
@@ -2382,7 +2465,10 @@ function WatermarkEditorTab() {
       top: displaySelectionRect.top,
       width: displaySelectionRect.width,
       height: displaySelectionRect.height,
-      borderRadius: selectionShape === 'circle' ? '9999px' : '12px'
+      borderRadius: selectionShape === 'circle' ? '9999px' : '12px',
+      border: activeTool === 'blur' ? 'none' : undefined,
+      background: activeTool === 'blur' ? 'transparent' : undefined,
+      boxShadow: activeTool === 'blur' ? 'none' : undefined
     }
   }, [activeTool, displaySelectionRect, selectionShape])
 
@@ -2393,8 +2479,8 @@ function WatermarkEditorTab() {
         ? `טשטוש רקע פעיל: ${selectionShape === 'circle' ? 'בחירה עגולה' : 'בחירה מרובעת'}.`
         : 'אין כרגע כלי עריכה פעיל.'
 
-  const usesExactBlurPreview = false
-  const previewImageSrc = baseImageSrc
+  const usesExactBlurPreview = activeTool === 'blur' && !!processedPreviewSrc
+  const previewImageSrc = usesExactBlurPreview ? processedPreviewSrc : baseImageSrc
 
   return (
     <div className="watermark-editor-tab">
@@ -2605,38 +2691,23 @@ function WatermarkEditorTab() {
           {previewImageSrc ? (
             <div className="watermark-stage">
               <img ref={baseImgRef} src={previewImageSrc} alt="" onLoad={updateStageSize} />
-              {!usesExactBlurPreview && activeTool === 'blur' && selectionShape === 'rect' &&
-                blurPanes.map((pane, index) => (
-                  <div
-                    key={`blur-pane-${index}`}
-                    className="watermark-blur-pane"
-                    style={{
-                      left: pane.left,
-                      top: pane.top,
-                      width: pane.width,
-                      height: pane.height,
-                      backdropFilter: blurBackdropFilter,
-                      WebkitBackdropFilter: blurBackdropFilter,
-                      background: blurOverlayTint,
-                      maskImage: pane.maskImage,
-                      WebkitMaskImage: pane.maskImage
-                    }}
-                  />
-                ))}
               {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherBandStyle && (
                 <div className="watermark-feather-band-rect" style={rectFeatherBandStyle} />
               )}
               {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherOuterStyle && (
                 <div className="watermark-feather-outer-rect" style={rectFeatherOuterStyle} />
               )}
-              {!usesExactBlurPreview && activeTool === 'blur' && selectionShape === 'circle' && circleBlurMaskStyle && (
-                <div className="watermark-blur-mask" style={circleBlurMaskStyle} />
+              {activeTool === 'blur' && selectionShape === 'rect' && selectionOverlayStyle && (
+                <div className="watermark-feather-inner-rect" style={selectionOverlayStyle} />
               )}
               {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherBandStyle && (
                 <div className="watermark-feather-band-circle" style={circleFeatherBandStyle} />
               )}
               {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherOuterStyle && (
                 <div className="watermark-feather-outer-circle" style={circleFeatherOuterStyle} />
+              )}
+              {activeTool === 'blur' && selectionShape === 'circle' && selectionOverlayStyle && (
+                <div className="watermark-feather-inner-circle" style={selectionOverlayStyle} />
               )}
               {selectionOverlayStyle && (
                 <div

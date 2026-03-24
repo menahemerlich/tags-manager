@@ -211,7 +211,7 @@ export interface WatermarkExportPayload {
   height: number
   opacity: number
   toolMode?: 'none' | 'crop' | 'blur'
-  selectionShape?: 'rect' | 'circle'
+  selectionShape?: SelectionShape
   selectionX?: number
   selectionY?: number
   selectionWidth?: number
@@ -221,10 +221,26 @@ export interface WatermarkExportPayload {
   focusSeparation?: number
 }
 
+export type SelectionShape = 'rect' | 'circle'
+
+export interface BlurSelection {
+  x: number
+  y: number
+  width: number
+  height: number
+  shape: SelectionShape
+}
+
+export interface BlurParams {
+  blurStrength: number
+  blurFeather: number
+  focusSeparation: number
+}
+
 export interface WatermarkPreviewPayload {
   baseImagePath: string
   toolMode?: 'none' | 'crop' | 'blur'
-  selectionShape?: 'rect' | 'circle'
+  selectionShape?: SelectionShape
   selectionX?: number
   selectionY?: number
   selectionWidth?: number

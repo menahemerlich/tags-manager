@@ -253,19 +253,33 @@ function applyBackgroundSeparation(
 
   const data = image.bitmap.data
   const influenceAt = createSelectionInfluence(selection, shape, feather)
-  const maxDimAmount = separation / 180
+  const normalized = separation / 100
+  const centerX = image.bitmap.width / 2
+  const centerY = image.bitmap.height / 2
+  const maxDistance = Math.max(1, Math.hypot(centerX, centerY))
 
   for (let y = 0; y < image.bitmap.height; y += 1) {
     for (let x = 0; x < image.bitmap.width; x += 1) {
       const selectionInfluence = influenceAt(x, y)
       const backgroundInfluence = 1 - selectionInfluence
-      if (backgroundInfluence <= 0) continue
-
-      const dimFactor = 1 - backgroundInfluence * maxDimAmount
       const idx = (image.bitmap.width * y + x) * 4
-      data[idx] = Math.round(data[idx] * dimFactor)
-      data[idx + 1] = Math.round(data[idx + 1] * dimFactor)
-      data[idx + 2] = Math.round(data[idx + 2] * dimFactor)
+      const vignette = clamp(Math.hypot(x - centerX, y - centerY) / maxDistance, 0, 1)
+      const backgroundDim = backgroundInfluence * normalized * (0.1 + vignette * 0.18)
+      const focusBoost = selectionInfluence * normalized * 0.1
+      const saturationFactor = 1 + selectionInfluence * normalized * 0.28 - backgroundInfluence * normalized * 0.12
+
+      let r = data[idx] * (1 + focusBoost - backgroundDim)
+      let g = data[idx + 1] * (1 + focusBoost - backgroundDim)
+      let b = data[idx + 2] * (1 + focusBoost - backgroundDim)
+      const gray = r * 0.299 + g * 0.587 + b * 0.114
+
+      r = gray + (r - gray) * saturationFactor
+      g = gray + (g - gray) * saturationFactor
+      b = gray + (b - gray) * saturationFactor
+
+      data[idx] = clamp(Math.round(r), 0, 255)
+      data[idx + 1] = clamp(Math.round(g), 0, 255)
+      data[idx + 2] = clamp(Math.round(b), 0, 255)
     }
   }
 }
