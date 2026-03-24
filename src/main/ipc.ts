@@ -11,6 +11,7 @@ import type {
   FaceAddEmbeddingPayload,
   FaceDetectionWithCandidate,
   FaceReplaceEmbeddingPayload,
+  ImportUserDataResult,
   PackageAppForTransferOptions,
   PackageAppForTransferResult,
   TagExportJson,
@@ -694,6 +695,54 @@ export function registerIpcHandlers(
     const userDataDir = app.getPath('userData')
     await shell.openPath(userDataDir)
     return userDataDir
+  })
+
+  ipcMain.handle('app:import-user-data', async (): Promise<ImportUserDataResult> => {
+    const win = getWindow()
+    const picked = await showOpenDialogForWindow(win, {
+      title: 'בחר קבצי נתוני אפליקציה לטעינה',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'User Data', extensions: ['sqlite', 'json'] }]
+    })
+    if (picked.canceled || picked.filePaths.length === 0) {
+      return { ok: false, cancelled: true }
+    }
+
+    const sqliteSource = picked.filePaths.find((fp) => basename(fp).toLowerCase() === 'tags-manager.sqlite')
+    if (!sqliteSource) {
+      return { ok: false, error: 'יש לבחור את הקובץ tags-manager.sqlite כדי לטעון תגיות ונתוני פנים.' }
+    }
+
+    try {
+      const db = getDb()
+      db.persistNow()
+      const userDataDir = app.getPath('userData')
+      mkdirSync(userDataDir, { recursive: true })
+
+      const copiedFiles: string[] = []
+      copyFileSync(normalizePath(sqliteSource), join(userDataDir, 'tags-manager.sqlite'))
+      copiedFiles.push('tags-manager.sqlite')
+
+      const settingsSource = picked.filePaths.find((fp) => basename(fp).toLowerCase() === 'settings.json')
+      if (settingsSource) {
+        copyFileSync(normalizePath(settingsSource), join(userDataDir, 'settings.json'))
+        copiedFiles.push('settings.json')
+      }
+
+      setTimeout(() => {
+        app.relaunch()
+        app.exit(0)
+      }, 150)
+
+      return {
+        ok: true,
+        copiedFiles,
+        userDataDir,
+        restartScheduled: true
+      }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message || String(e) }
+    }
   })
 
   ipcMain.handle('shell:show-in-folder', async (_e, filePath: string) => {

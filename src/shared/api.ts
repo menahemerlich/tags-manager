@@ -18,6 +18,7 @@ import type {
   FaceReplaceEmbeddingPayload,
   PackageAppForTransferOptions,
   PackageAppForTransferResult,
+  ImportUserDataResult,
   WatermarkExportPayload,
   WatermarkPreviewPayload,
   WatermarkExportResult
@@ -61,6 +62,7 @@ export interface ElectronApi {
   replaceFaceEmbedding: (payload: FaceReplaceEmbeddingPayload) => Promise<{ ok: true } | { ok: false; error: string }>
   getAppVersion: () => Promise<string>
   openAppUserDataDir: () => Promise<string>
+  importUserDataFromBackup: () => Promise<ImportUserDataResult>
   onIndexProgress: (
     cb: (p: { done: number; total: number; currentPath: string }) => void
   ) => () => void

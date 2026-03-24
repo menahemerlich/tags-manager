@@ -19,6 +19,7 @@ import type {
   FaceReplaceEmbeddingPayload,
   PackageAppForTransferOptions,
   PackageAppForTransferResult,
+  ImportUserDataResult,
   WatermarkExportPayload,
   WatermarkPreviewPayload,
   WatermarkExportResult
@@ -92,6 +93,7 @@ const api = {
     >,
   getAppVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
   openAppUserDataDir: () => ipcRenderer.invoke('app:open-user-data-dir') as Promise<string>,
+  importUserDataFromBackup: () => ipcRenderer.invoke('app:import-user-data') as Promise<ImportUserDataResult>,
   onIndexProgress: (cb: (p: { done: number; total: number; currentPath: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { done: number; total: number; currentPath: string }) =>
       cb(payload)

@@ -117,6 +117,7 @@ export default function App() {
   const [transferMsg, setTransferMsg] = useState<string | null>(null)
   const [transferRevealPath, setTransferRevealPath] = useState<string | null>(null)
   const [isPackagingTransfer, setIsPackagingTransfer] = useState(false)
+  const [isImportingUserData, setIsImportingUserData] = useState(false)
   const [transferBuildChoiceOpen, setTransferBuildChoiceOpen] = useState(false)
   const [transferProgress, setTransferProgress] = useState<TransferPackageProgress | null>(null)
   const [tagIoScopePath, setTagIoScopePath] = useState<string | null>(null)
@@ -566,7 +567,7 @@ export default function App() {
     setTransferProgress({ stage: 'select-destination', message: 'ממתין לבחירת תיקיית יעד...' })
     try {
       const res = await window.api.packageAppForTransfer({ rebuildInstaller })
-      if (!res.ok) {
+      if (res.ok === false) {
         if (!res.cancelled) {
           setTransferProgress({ stage: 'error', message: 'אריזת ההתקנה נכשלה', detail: res.error ?? '' })
           setError(res.error ?? 'אריזת ההתקנה נכשלה')
@@ -592,6 +593,29 @@ export default function App() {
       setTransferProgress({ stage: 'done', message: 'האריזה הושלמה בהצלחה.' })
     } finally {
       setIsPackagingTransfer(false)
+    }
+  }
+
+  async function handleImportUserDataFromBackup(): Promise<void> {
+    setError(null)
+    setTransferMsg('פותח חלונית לבחירת קבצי גיבוי...')
+    setIsImportingUserData(true)
+    try {
+      const res = await window.api.importUserDataFromBackup()
+      if (!res.ok) {
+        if (res.cancelled) {
+          setTransferMsg('טעינת נתונים בוטלה.')
+        } else {
+          setError(res.error ?? 'טעינת נתוני משתמש נכשלה')
+          setTransferMsg(`טעינת הנתונים נכשלה: ${res.error ?? 'שגיאה לא ידועה'}`)
+        }
+        return
+      }
+      setTransferMsg(
+        `הטעינה הצליחה.\nנטענו קבצים: ${res.copiedFiles.join(', ')}.\nהאפליקציה תופעל מחדש אוטומטית כדי לטעון את הנתונים.`
+      )
+    } finally {
+      setIsImportingUserData(false)
     }
   }
 
@@ -1535,6 +1559,14 @@ export default function App() {
                       onClick={() => void window.api.openAppUserDataDir()}
                     >
                       פתח תיקיית נתוני האפליקציה
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void handleImportUserDataFromBackup()}
+                      disabled={isImportingUserData || isPackagingTransfer}
+                    >
+                      {isImportingUserData ? 'טוען נתונים...' : 'טען נתונים מקבצי גיבוי'}
                     </button>
                     <button
                       type="button"

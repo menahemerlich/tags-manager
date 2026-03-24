@@ -39,6 +39,19 @@ export type PackageAppForTransferResult =
       error?: string
     }
 
+export type ImportUserDataResult =
+  | {
+      ok: true
+      copiedFiles: string[]
+      userDataDir: string
+      restartScheduled: true
+    }
+  | {
+      ok: false
+      cancelled?: true
+      error?: string
+    }
+
 export type PathKind = 'file' | 'folder'
 
 export interface TagRow {
