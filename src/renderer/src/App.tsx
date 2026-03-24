@@ -2387,32 +2387,6 @@ function WatermarkEditorTab() {
     }
   }, [activeTool, blurFeatherPreviewPx, displaySelectionRect, selectionShape])
 
-  const circleFeatherBandStyle = useMemo<CSSProperties | null>(() => {
-    if (!circleFeatherPreviewGeometry || circleFeatherPreviewGeometry.feather <= 0) return null
-    const outerRadiusX = Math.max(1, circleFeatherPreviewGeometry.outer.width / 2)
-    const outerRadiusY = Math.max(1, circleFeatherPreviewGeometry.outer.height / 2)
-    const innerRadiusX = Math.max(1, circleFeatherPreviewGeometry.inner.width / 2)
-    const innerRadiusY = Math.max(1, circleFeatherPreviewGeometry.inner.height / 2)
-    const centerX = circleFeatherPreviewGeometry.outer.left + outerRadiusX
-    const centerY = circleFeatherPreviewGeometry.outer.top + outerRadiusY
-    const innerPercent = clampNumber(
-      Math.round(Math.min(innerRadiusX / outerRadiusX, innerRadiusY / outerRadiusY) * 100),
-      6,
-      100
-    )
-    const ringMask = `radial-gradient(ellipse ${outerRadiusX}px ${outerRadiusY}px at ${centerX}px ${centerY}px, transparent 0, transparent ${innerPercent}%, black calc(${innerPercent}% + 0.6%), black calc(100% - 1px), transparent 100%)`
-    return {
-      left: circleFeatherPreviewGeometry.outer.left,
-      top: circleFeatherPreviewGeometry.outer.top,
-      width: circleFeatherPreviewGeometry.outer.width,
-      height: circleFeatherPreviewGeometry.outer.height,
-      borderRadius: '9999px',
-      background: 'rgba(103, 232, 249, 0.08)',
-      maskImage: ringMask,
-      WebkitMaskImage: ringMask
-    }
-  }, [circleFeatherPreviewGeometry])
-
   const circleFeatherOuterStyle = useMemo<CSSProperties | null>(() => {
     if (!circleFeatherPreviewGeometry || circleFeatherPreviewGeometry.feather <= 0) return null
     return {
@@ -2469,6 +2443,17 @@ function WatermarkEditorTab() {
       border: activeTool === 'blur' ? 'none' : undefined,
       background: activeTool === 'blur' ? 'transparent' : undefined,
       boxShadow: activeTool === 'blur' ? 'none' : undefined
+    }
+  }, [activeTool, displaySelectionRect, selectionShape])
+
+  const innerSelectionBorderStyle = useMemo<CSSProperties | null>(() => {
+    if (!displaySelectionRect || activeTool !== 'blur') return null
+    return {
+      left: displaySelectionRect.left,
+      top: displaySelectionRect.top,
+      width: displaySelectionRect.width,
+      height: displaySelectionRect.height,
+      borderRadius: selectionShape === 'circle' ? '9999px' : '12px'
     }
   }, [activeTool, displaySelectionRect, selectionShape])
 
@@ -2697,17 +2682,14 @@ function WatermarkEditorTab() {
               {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherOuterStyle && (
                 <div className="watermark-feather-outer-rect" style={rectFeatherOuterStyle} />
               )}
-              {activeTool === 'blur' && selectionShape === 'rect' && selectionOverlayStyle && (
-                <div className="watermark-feather-inner-rect" style={selectionOverlayStyle} />
-              )}
-              {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherBandStyle && (
-                <div className="watermark-feather-band-circle" style={circleFeatherBandStyle} />
+              {activeTool === 'blur' && selectionShape === 'rect' && innerSelectionBorderStyle && (
+                <div className="watermark-feather-inner-rect" style={innerSelectionBorderStyle} />
               )}
               {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherOuterStyle && (
                 <div className="watermark-feather-outer-circle" style={circleFeatherOuterStyle} />
               )}
-              {activeTool === 'blur' && selectionShape === 'circle' && selectionOverlayStyle && (
-                <div className="watermark-feather-inner-circle" style={selectionOverlayStyle} />
+              {activeTool === 'blur' && selectionShape === 'circle' && innerSelectionBorderStyle && (
+                <div className="watermark-feather-inner-circle" style={innerSelectionBorderStyle} />
               )}
               {selectionOverlayStyle && (
                 <div
