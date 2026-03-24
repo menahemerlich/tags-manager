@@ -17,6 +17,13 @@ function smoothstep(value: number): number {
   return t * t * (3 - 2 * t)
 }
 
+function applyFeatherSoftnessCurve(transition: number, softnessSlider: number | undefined): number {
+  const softness = clamp(Math.round(softnessSlider ?? 24), 0, 100) / 100
+  const eased = smoothstep(transition)
+  const exponent = 2.4 - softness * 1.75
+  return clamp(Math.pow(eased, exponent), 0, 1)
+}
+
 function getBlurStrengthRadius(sliderValue: number | undefined): number {
   const normalized = clamp(Math.round(sliderValue ?? 14), 0, 40) / 40
   return clamp(Math.round(Math.pow(normalized, 1.45) * 36), 0, 36)
@@ -39,7 +46,8 @@ function ellipseBoundaryDistanceAlongRay(dx: number, dy: number, radiusX: number
 
 function createBlurMixAt(
   selection: BlurSelection,
-  feather: number
+  feather: number,
+  softnessSlider: number | undefined
 ): (pixelX: number, pixelY: number) => number {
   return (pixelX: number, pixelY: number): number => {
     if (selection.shape === 'rect') {
@@ -53,7 +61,7 @@ function createBlurMixAt(
       if (feather <= 0) return 1
       if (distanceToInnerRect >= feather) return 1
 
-      return smoothstep(distanceToInnerRect / feather)
+      return applyFeatherSoftnessCurve(distanceToInnerRect / feather, softnessSlider)
     }
 
     const centerX = selection.x + selection.width / 2
@@ -71,7 +79,10 @@ function createBlurMixAt(
     if (distance <= innerBoundary) return 0
     if (feather <= 0 || distance >= outerBoundary) return 1
 
-    return smoothstep((distance - innerBoundary) / Math.max(0.0001, outerBoundary - innerBoundary))
+    return applyFeatherSoftnessCurve(
+      (distance - innerBoundary) / Math.max(0.0001, outerBoundary - innerBoundary),
+      softnessSlider
+    )
   }
 }
 
@@ -142,7 +153,7 @@ export function renderBlurPreviewDataUrl(
 ): string {
   const scaledSelection = scaleSelection(selection, source.scale)
   const feather = getBlurFeatherPixels(params.blurFeather, scaledSelection)
-  const blurMixAt = createBlurMixAt(scaledSelection, feather)
+  const blurMixAt = createBlurMixAt(scaledSelection, feather, params.blurFeather)
   const sharp = source.imageData.data
   const blurred = blurredImageData.data
   const output = new Uint8ClampedArray(sharp.length)

@@ -1196,8 +1196,9 @@ tr.selected td {
 
 .watermark-feather-inner-circle,
 .watermark-feather-inner-rect {
-  z-index: 3;
-  border: 1px dashed rgba(103, 232, 249, 0.92);
+  z-index: 4;
+  border: 2px dashed rgba(103, 232, 249, 0.98);
+  box-shadow: 0 0 0 1px rgba(8, 12, 22, 0.55);
 }
 
 .watermark-feather-inner-circle {

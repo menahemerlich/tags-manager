@@ -43,6 +43,13 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function applyFeatherSoftnessCurve(transition: number, softnessSlider: number | undefined): number {
+  const softness = clamp(Math.round(softnessSlider ?? 24), 0, 100) / 100
+  const eased = transition * transition * (3 - 2 * transition)
+  const exponent = 2.4 - softness * 1.75
+  return clamp(Math.pow(eased, exponent), 0, 1)
+}
+
 function outputMimeFromPath(filePath: string): 'image/png' | 'image/jpeg' | 'image/bmp' {
   const lower = filePath.toLowerCase()
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
@@ -169,12 +176,13 @@ function copyFocusedArea(
   target: JimpImage,
   selection: { x: number; y: number; width: number; height: number },
   shape: 'rect' | 'circle',
-  feather: number
+  feather: number,
+  softnessSlider: number | undefined
 ): void {
   const sourceData = source.bitmap.data
   const targetData = target.bitmap.data
 
-  const selectionInfluence = createSelectionInfluence(selection, shape, feather)
+  const selectionInfluence = createSelectionInfluence(selection, shape, feather, softnessSlider)
 
   const startX = Math.max(0, Math.floor(selection.x - feather))
   const startY = Math.max(0, Math.floor(selection.y - feather))
@@ -204,7 +212,8 @@ function copyFocusedArea(
 function createSelectionInfluence(
   selection: { x: number; y: number; width: number; height: number },
   shape: 'rect' | 'circle',
-  feather: number
+  feather: number,
+  softnessSlider: number | undefined
 ): (pixelX: number, pixelY: number) => number {
   return (pixelX: number, pixelY: number): number => {
     if (feather <= 0) return isInsideSelection(pixelX, pixelY, selection, shape) ? 1 : 0
@@ -220,7 +229,7 @@ function createSelectionInfluence(
       if (distanceToInnerRect >= feather) return 0
 
       const transition = clamp(distanceToInnerRect / feather, 0, 1)
-      return 1 - (transition * transition * (3 - 2 * transition))
+      return 1 - applyFeatherSoftnessCurve(transition, softnessSlider)
     } else {
       const centerX = selection.x + selection.width / 2
       const centerY = selection.y + selection.height / 2
@@ -237,7 +246,7 @@ function createSelectionInfluence(
       if (distance <= innerBoundary) return 1
       if (distance >= outerBoundary) return 0
       const transition = clamp((distance - innerBoundary) / Math.max(0.0001, outerBoundary - innerBoundary), 0, 1)
-      return 1 - (transition * transition * (3 - 2 * transition))
+      return 1 - applyFeatherSoftnessCurve(transition, softnessSlider)
     }
   }
 }
@@ -247,12 +256,13 @@ function applyBackgroundSeparation(
   selection: { x: number; y: number; width: number; height: number },
   shape: 'rect' | 'circle',
   feather: number,
+  softnessSlider: number | undefined,
   separation: number
 ): void {
   if (separation <= 0) return
 
   const data = image.bitmap.data
-  const influenceAt = createSelectionInfluence(selection, shape, feather)
+  const influenceAt = createSelectionInfluence(selection, shape, feather, softnessSlider)
   const normalized = separation / 100
   const centerX = image.bitmap.width / 2
   const centerY = image.bitmap.height / 2
@@ -327,8 +337,8 @@ export async function exportWatermarkedImage(options: WatermarkCompositeOptions)
     const featherAmount = getBlurFeatherPixels(options.blurFeather, selection)
     const separation = clamp(Math.round(options.focusSeparation ?? 45), 0, 100)
     if (blurAmount <= 0) finalBase = base.clone() as JimpImage
-    applyBackgroundSeparation(finalBase, selection, selectionShape, featherAmount, separation)
-    copyFocusedArea(base, finalBase, selection, selectionShape, featherAmount)
+    applyBackgroundSeparation(finalBase, selection, selectionShape, featherAmount, options.blurFeather, separation)
+    copyFocusedArea(base, finalBase, selection, selectionShape, featherAmount, options.blurFeather)
   }
 
   const width = Math.max(1, Math.round(options.width))
@@ -388,8 +398,8 @@ export async function renderWatermarkPreviewDataUrl(options: WatermarkPreviewOpt
     const featherAmount = getBlurFeatherPixels(options.blurFeather, selection)
     const separation = clamp(Math.round(options.focusSeparation ?? 45), 0, 100)
     if (blurAmount <= 0) previewBase = base.clone() as JimpImage
-    applyBackgroundSeparation(previewBase, selection, selectionShape, featherAmount, separation)
-    copyFocusedArea(base, previewBase, selection, selectionShape, featherAmount)
+    applyBackgroundSeparation(previewBase, selection, selectionShape, featherAmount, options.blurFeather, separation)
+    copyFocusedArea(base, previewBase, selection, selectionShape, featherAmount, options.blurFeather)
   }
 
   const buffer = await previewBase.getBuffer('image/png')
