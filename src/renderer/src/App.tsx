@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
   FaceDetection,
   ImportConflictChoice,
   PathKind,
   SearchResultRow,
+  TransferPackageProgress,
   TagFolderRow,
   TagImportPreview,
   TagRow
@@ -15,10 +16,57 @@ import '@tensorflow/tfjs-backend-cpu'
 
 type Tab = 'library' | 'search' | 'tags' | 'settings'
 
-type FaceTab = 'faces'
+type FaceTab = 'faces' | 'watermark'
+
+type WatermarkToolMode = 'none' | 'crop' | 'blur'
+type WatermarkSelectionShape = 'rect' | 'circle'
+type WatermarkSelectionRect = { x: number; y: number; width: number; height: number }
+type WatermarkSelectionHandle = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+type FolderAccentStyle = CSSProperties & {
+  '--folder-accent'?: string
+  '--folder-accent-rgb'?: string
+  '--folder-text'?: string
+}
+
+const FOLDER_COLOR_PALETTE = [
+  { accent: '#22d3ee', accentRgb: '34, 211, 238', text: '#ecfeff' },
+  { accent: '#8b5cf6', accentRgb: '139, 92, 246', text: '#f3e8ff' },
+  { accent: '#10b981', accentRgb: '16, 185, 129', text: '#d1fae5' },
+  { accent: '#f59e0b', accentRgb: '245, 158, 11', text: '#fef3c7' },
+  { accent: '#ef4444', accentRgb: '239, 68, 68', text: '#fee2e2' },
+  { accent: '#6366f1', accentRgb: '99, 102, 241', text: '#e0e7ff' },
+  { accent: '#ec4899', accentRgb: '236, 72, 153', text: '#fce7f3' },
+  { accent: '#84cc16', accentRgb: '132, 204, 22', text: '#ecfccb' },
+  { accent: '#f97316', accentRgb: '249, 115, 22', text: '#ffedd5' },
+  { accent: '#14b8a6', accentRgb: '20, 184, 166', text: '#ccfbf1' }
+] as const
+
+function getFolderAccentStyle(folderId: number | null | undefined): FolderAccentStyle | undefined {
+  if (folderId == null) return undefined
+  const paletteEntry = FOLDER_COLOR_PALETTE[Math.abs(folderId) % FOLDER_COLOR_PALETTE.length]
+  return {
+    '--folder-accent': paletteEntry.accent,
+    '--folder-accent-rgb': paletteEntry.accentRgb,
+    '--folder-text': paletteEntry.text
+  }
+}
 
 function kindHe(kind: PathKind): string {
   return kind === 'folder' ? 'תיקייה' : 'קובץ'
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function loadImageDimensions(imageSrc: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
+    img.onerror = () => reject(new Error('טעינת תמונה נכשלה'))
+    img.src = imageSrc
+  })
 }
 
 export default function App() {
@@ -32,6 +80,7 @@ export default function App() {
   const [expandedTagFolderIds, setExpandedTagFolderIds] = useState<Record<number, boolean>>({})
   const [expandedLibraryFolderIds, setExpandedLibraryFolderIds] = useState<Record<number, boolean>>({})
   const [expandedSearchFolderIds, setExpandedSearchFolderIds] = useState<Record<number, boolean>>({})
+  const [openTagFolderMenuId, setOpenTagFolderMenuId] = useState<number | null>(null)
   const [libraryTagFolderByName, setLibraryTagFolderByName] = useState<Record<string, number | null>>({})
   const [searchTagsModal, setSearchTagsModal] = useState<{ open: boolean; path: string; tags: string[] }>({
     open: false,
@@ -53,9 +102,14 @@ export default function App() {
   const [selectedSearchDirectTags, setSelectedSearchDirectTags] = useState<string[]>([])
   const [searchFileTagDraft, setSearchFileTagDraft] = useState('')
   const [settingsRepo, setSettingsRepo] = useState('')
-  const [settingsView, setSettingsView] = useState<'updates' | 'io' | 'about'>('updates')
+  const [settingsView, setSettingsView] = useState<'updates' | 'io' | 'transfer' | 'about'>('updates')
   const [appVersion, setAppVersion] = useState('')
   const [updateMsg, setUpdateMsg] = useState<string | null>(null)
+  const [transferMsg, setTransferMsg] = useState<string | null>(null)
+  const [transferRevealPath, setTransferRevealPath] = useState<string | null>(null)
+  const [isPackagingTransfer, setIsPackagingTransfer] = useState(false)
+  const [transferBuildChoiceOpen, setTransferBuildChoiceOpen] = useState(false)
+  const [transferProgress, setTransferProgress] = useState<TransferPackageProgress | null>(null)
   const [tagIoScopePath, setTagIoScopePath] = useState<string | null>(null)
   const [tagIoMsg, setTagIoMsg] = useState<string | null>(null)
   const [importPreview, setImportPreview] = useState<TagImportPreview | null>(null)
@@ -100,6 +154,51 @@ export default function App() {
     })
     return off
   }, [])
+
+  useEffect(() => {
+    const off = window.api.onTransferPackageProgress((p) => {
+      setTransferProgress(p)
+    })
+    return off
+  }, [])
+
+  const transferProgressPercent = useMemo(() => {
+    if (!transferProgress) return 0
+    switch (transferProgress.stage) {
+      case 'idle':
+        return 0
+      case 'select-destination':
+        return 5
+      case 'validating':
+        return 14
+      case 'persisting-data':
+        return 24
+      case 'searching-installer':
+        return 34
+      case 'building':
+        return 62
+      case 'collecting-installer':
+        return 78
+      case 'copying-data':
+        return 88
+      case 'writing-instructions':
+        return 95
+      case 'done':
+        return 100
+      case 'error':
+        return 100
+      default:
+        return 0
+    }
+  }, [transferProgress])
+
+  useEffect(() => {
+    if (openTagFolderMenuId === null) return
+
+    const closeMenu = () => setOpenTagFolderMenuId(null)
+    document.addEventListener('pointerdown', closeMenu)
+    return () => document.removeEventListener('pointerdown', closeMenu)
+  }, [openTagFolderMenuId])
 
   function addLibraryTag(name: string) {
     const n = normalizeTagName(name)
@@ -287,6 +386,14 @@ export default function App() {
     return map
   }, [tagFolders])
 
+  const folderIdByTagNameLower = useMemo(() => {
+    const map = new Map<string, number | null>()
+    for (const tag of tags) {
+      map.set(tag.name.toLowerCase(), folderIdByTagId.get(tag.id) ?? null)
+    }
+    return map
+  }, [folderIdByTagId, tags])
+
   function getTagIdByName(name: string): number | null {
     const n = normalizeTagName(name)
     if (!n) return null
@@ -341,6 +448,17 @@ export default function App() {
     return `${folderName} / ${name}`
   }
 
+  function getTagAccentStyle(tagName: string): FolderAccentStyle | undefined {
+    return getFolderAccentStyle(folderIdByTagNameLower.get(tagName.toLowerCase()) ?? null)
+  }
+
+  function getTagClassName(tagName: string, baseClass: 'tag' | 'chip', isActive = false): string {
+    const classes: string[] = [baseClass]
+    if (isActive) classes.push('on')
+    if ((folderIdByTagNameLower.get(tagName.toLowerCase()) ?? null) != null) classes.push('folder-tag')
+    return classes.join(' ')
+  }
+
   async function createTagFolder() {
     const n = normalizeTagName(newTagFolderName)
     if (!n) return
@@ -353,6 +471,48 @@ export default function App() {
     setNewTagFolderName('')
     await refreshTagFolders()
     setExpandedTagFolderIds((prev) => ({ ...prev, [res.id]: true }))
+  }
+
+  async function deleteTagFolder(folder: TagFolderRow) {
+    const folderTagNames = tags
+      .filter((tag) => folder.tagIds.includes(tag.id))
+      .map((tag) => tag.name)
+    const tagCount = folderTagNames.length
+    const confirmed = confirm(
+      tagCount > 0
+        ? `למחוק את התיקייה "${folder.name}"? ${tagCount} התגיות שבתוכה יעברו ל"ללא תיקייה".`
+        : `למחוק את התיקייה "${folder.name}"?`
+    )
+    if (!confirmed) return
+
+    setError(null)
+    setOpenTagFolderMenuId(null)
+    await window.api.deleteTagFolder(folder.id)
+
+    setExpandedTagFolderIds((prev) => {
+      const next = { ...prev }
+      delete next[folder.id]
+      return next
+    })
+    setExpandedLibraryFolderIds((prev) => {
+      const next = { ...prev }
+      delete next[folder.id]
+      return next
+    })
+    setExpandedSearchFolderIds((prev) => {
+      const next = { ...prev }
+      delete next[folder.id]
+      return next
+    })
+    setLibraryTagFolderByName((prev) => {
+      const next = { ...prev }
+      for (const name of folderTagNames) next[name.toLowerCase()] = null
+      return next
+    })
+
+    await refreshTags()
+    await refreshTagFolders()
+    void runSearch()
   }
 
   async function assignTagToFolder(tagId: number, folderIdRaw: string) {
@@ -386,6 +546,50 @@ export default function App() {
     } else {
       setUpdateMsg(`אין עדכון — הגרסה המותקנת היא העדכנית (${r.currentVersion}).`)
     }
+  }
+
+  async function handlePackageForTransfer(rebuildInstaller: boolean) {
+    setError(null)
+    setTransferMsg(null)
+    setTransferRevealPath(null)
+    setTransferBuildChoiceOpen(false)
+    setIsPackagingTransfer(true)
+    setTransferProgress({ stage: 'select-destination', message: 'ממתין לבחירת תיקיית יעד...' })
+    try {
+      const res = await window.api.packageAppForTransfer({ rebuildInstaller })
+      if (!res.ok) {
+        if (!res.cancelled) {
+          setTransferProgress({ stage: 'error', message: 'אריזת ההתקנה נכשלה', detail: res.error ?? '' })
+          setError(res.error ?? 'אריזת ההתקנה נכשלה')
+        } else {
+          setTransferProgress(null)
+        }
+        return
+      }
+      const copiedDataSummary =
+        res.copiedUserDataFiles.length > 0
+          ? `נתוני משתמש שנכללו: ${res.copiedUserDataFiles.map((filePath) => filePath.split(/[/\\]/).pop() ?? filePath).join(', ')}.`
+          : 'לא נמצאו קבצי נתוני משתמש להעתקה.'
+      const missingDataSummary =
+        res.missingUserDataFiles.length > 0
+          ? ` קבצים חסרים: ${res.missingUserDataFiles.join(', ')}.`
+          : ''
+      const installerStrategySummary =
+        res.installerStrategy === 'existing' ? 'נעשה שימוש במתקין קיים.' : 'נבנה מתקין חדש.'
+      setTransferMsg(
+        `נוצרה חבילה להעברה בתיקייה: ${res.bundleDir}\nמתקין: ${res.installerPath}\n${installerStrategySummary}\n${copiedDataSummary}${missingDataSummary}`
+      )
+      setTransferRevealPath(res.installerPath)
+      setTransferProgress({ stage: 'done', message: 'האריזה הושלמה בהצלחה.' })
+    } finally {
+      setIsPackagingTransfer(false)
+    }
+  }
+
+  async function refreshSearchTagData(): Promise<void> {
+    await refreshTags()
+    await refreshTagFolders()
+    await runSearch()
   }
 
   async function chooseTagIoScope() {
@@ -511,6 +715,7 @@ export default function App() {
               ['search', 'חיפוש'],
               ['tags', 'תגיות'],
               ['faces', 'זיהוי פנים'],
+              ['watermark', 'סימן מים'],
               ['settings', 'הגדרות']
             ] as const
           ).map(([id, label]) => (
@@ -582,8 +787,8 @@ export default function App() {
                   {libraryTags.length > 0 && (
                     <div className="tags" style={{ marginTop: '0.5rem' }}>
                       {libraryTags.map((t) => (
-                        <span key={t} className="tag">
-                      {formatTagLabel(t)}
+                        <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
+                          {formatTagLabel(t)}
                           <button type="button" className="x" title="הסר" onClick={() => removeLibraryTag(t)}>
                             ×
                           </button>
@@ -625,6 +830,7 @@ export default function App() {
                               key={`library-folder-${folder.id}`}
                               type="button"
                               className={`chip folder-chip ${expandedLibraryFolderIds[folder.id] ? 'on' : ''}`}
+                              style={getFolderAccentStyle(folder.id)}
                               onClick={() =>
                                 setExpandedLibraryFolderIds((prev) => ({
                                   ...prev,
@@ -644,7 +850,12 @@ export default function App() {
                           <button
                             key={t.id}
                             type="button"
-                            className={libraryTags.some((x) => x.toLowerCase() === t.name.toLowerCase()) ? 'chip on' : 'chip'}
+                            className={getTagClassName(
+                              t.name,
+                              'chip',
+                              libraryTags.some((x) => x.toLowerCase() === t.name.toLowerCase())
+                            )}
+                            style={getTagAccentStyle(t.name)}
                             onClick={() => void requestAddLibraryTag(t.name)}
                             title={libraryTags.includes(t.name) ? 'כבר קיים' : 'הוסף'}
                           >
@@ -661,7 +872,12 @@ export default function App() {
                               <button
                                 key={t.id}
                                 type="button"
-                                className={libraryTags.some((x) => x.toLowerCase() === t.name.toLowerCase()) ? 'chip on' : 'chip'}
+                                className={getTagClassName(
+                                  t.name,
+                                  'chip',
+                                  libraryTags.some((x) => x.toLowerCase() === t.name.toLowerCase())
+                                )}
+                                style={getTagAccentStyle(t.name)}
                                 onClick={() => void requestAddLibraryTag(t.name)}
                                 title={libraryTags.includes(t.name) ? 'כבר קיים' : 'הוסף'}
                               >
@@ -725,6 +941,9 @@ export default function App() {
                 <button type="button" className="btn primary" onClick={addToSearchQuery}>
                   הוסף לחיפוש
                 </button>
+                <button type="button" className="btn" onClick={() => void refreshSearchTagData()}>
+                  רענן תגיות
+                </button>
               </div>
             </div>
             {searchSelected.length > 0 && (
@@ -732,7 +951,7 @@ export default function App() {
                 <span className="muted small">תגיות פעילות בחיפוש:</span>
                 <div className="tags" style={{ marginTop: '0.35rem' }}>
                   {searchSelected.map((t) => (
-                    <span key={t} className="tag">
+                    <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
                       {formatTagLabel(t)}
                       <button type="button" className="x" title="הסר מחיפוש" onClick={() => removeSearchTag(t)}>
                         ×
@@ -750,6 +969,7 @@ export default function App() {
                     key={folder.id}
                     type="button"
                     className={`chip folder-chip ${expandedSearchFolderIds[folder.id] ? 'on' : ''}`}
+                    style={getFolderAccentStyle(folder.id)}
                     onClick={() =>
                       setExpandedSearchFolderIds((prev) => ({
                         ...prev,
@@ -769,7 +989,8 @@ export default function App() {
                   <button
                     key={t.id}
                     type="button"
-                    className={searchSelected.includes(t.name) ? 'chip on' : 'chip'}
+                    className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
+                    style={getTagAccentStyle(t.name)}
                     onClick={() => toggleQuickSearchTag(t.name)}
                   >
                     {formatTagLabel(t.name)}
@@ -785,7 +1006,8 @@ export default function App() {
                     <button
                       key={t.id}
                       type="button"
-                      className={searchSelected.includes(t.name) ? 'chip on' : 'chip'}
+                      className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
+                      style={getTagAccentStyle(t.name)}
                       onClick={() => toggleQuickSearchTag(t.name)}
                     >
                       {formatTagLabel(t.name)}
@@ -839,7 +1061,7 @@ export default function App() {
                         <div className="search-tags-collapsed">
                           <div className="tags">
                             {row.tags.slice(0, 5).map((t) => (
-                              <span key={t} className="tag">
+                              <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
                                 {formatTagLabel(t)}
                               </span>
                             ))}
@@ -895,7 +1117,7 @@ export default function App() {
                   </p>
                   <div className="tags" style={{ marginBottom: '0.5rem' }}>
                   {selectedSearchDirectTags.map((t) => (
-                    <span key={t} className="tag">
+                    <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
                       {formatTagLabel(t)}
                       <button
                         type="button"
@@ -938,11 +1160,12 @@ export default function App() {
                         <button
                           key={t.id}
                           type="button"
-                          className={
+                          className={getTagClassName(
+                            t.name,
+                            'chip',
                             selectedSearchDirectTags.some((x) => x.toLowerCase() === t.name.toLowerCase())
-                              ? 'chip on'
-                              : 'chip'
-                          }
+                          )}
+                          style={getTagAccentStyle(t.name)}
                           onClick={() => void addTagToSearchFile(t.name)}
                         >
                           {formatTagLabel(t.name)}
@@ -977,20 +1200,53 @@ export default function App() {
             {tagFolders.length > 0 && (
               <div className="chips" style={{ marginTop: 0 }}>
                 {tagFolders.map((folder) => (
-                  <button
+                  <div
                     key={folder.id}
-                    type="button"
-                    className={`chip folder-chip ${expandedTagFolderIds[folder.id] ? 'on' : ''}`}
-                    title={`תגיות בתיקייה: ${folder.tagIds.length}`}
-                    onClick={() =>
-                      setExpandedTagFolderIds((prev) => ({
-                        ...prev,
-                        [folder.id]: !prev[folder.id]
-                      }))
-                    }
+                    className="folder-chip-wrap"
+                    style={getFolderAccentStyle(folder.id)}
+                    onPointerDown={(e) => e.stopPropagation()}
                   >
-                    {folder.name} ({folder.tagIds.length})
-                  </button>
+                    <button
+                      type="button"
+                      className={`chip folder-chip ${expandedTagFolderIds[folder.id] ? 'on' : ''}`}
+                      style={getFolderAccentStyle(folder.id)}
+                      title={`תגיות בתיקייה: ${folder.tagIds.length}`}
+                      onClick={() =>
+                        setExpandedTagFolderIds((prev) => ({
+                          ...prev,
+                          [folder.id]: !prev[folder.id]
+                        }))
+                      }
+                    >
+                      {folder.name} ({folder.tagIds.length})
+                    </button>
+                    <button
+                      type="button"
+                      className="folder-chip-menu-trigger"
+                      aria-label={`אפשרויות עבור ${folder.name}`}
+                      title="אפשרויות תיקייה"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenTagFolderMenuId((prev) => (prev === folder.id ? null : folder.id))
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      <span />
+                      <span />
+                      <span />
+                    </button>
+                    {openTagFolderMenuId === folder.id && (
+                      <div
+                        className="folder-chip-menu"
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >
+                        <button type="button" className="folder-chip-menu-item danger" onClick={() => void deleteTagFolder(folder)}>
+                          מחק תיקייה
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
@@ -1001,7 +1257,11 @@ export default function App() {
               if (!expandedTagFolderIds[folder.id]) return null
               const folderTags = tags.filter((t) => folderIdByTagId.get(t.id) === folder.id)
               return (
-                <div key={folder.id} className="table-wrap" style={{ marginBottom: '0.75rem' }}>
+                <div
+                  key={folder.id}
+                  className="table-wrap folder-table-wrap"
+                  style={{ ...getFolderAccentStyle(folder.id), marginBottom: '0.75rem' }}
+                >
                   <table>
                     <thead>
                       <tr>
@@ -1064,7 +1324,13 @@ export default function App() {
 
         {tab === 'faces' && (
           <section className="panel">
-            <FaceRecognitionTab />
+            <FaceRecognitionTab onTagsChanged={refreshSearchTagData} />
+          </section>
+        )}
+
+        {tab === 'watermark' && (
+          <section className="panel">
+            <WatermarkEditorTab />
           </section>
         )}
 
@@ -1084,6 +1350,13 @@ export default function App() {
                 onClick={() => setSettingsView('io')}
               >
                 ייבוא/ייצוא
+              </button>
+              <button
+                type="button"
+                className={settingsView === 'transfer' ? 'btn primary' : 'btn'}
+                onClick={() => setSettingsView('transfer')}
+              >
+                העברה
               </button>
               <button
                 type="button"
@@ -1238,6 +1511,98 @@ export default function App() {
               </>
             )}
 
+            {settingsView === 'transfer' && (
+              <>
+                <div className="field" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                  <label>אריזת התקנה להעברה למחשב אחר</label>
+                  <p className="muted small" style={{ marginTop: '0.35rem' }}>
+                    הפעולה תיצור תיקיית חבילה שכוללת מתקין עדכני של התוכנה, את נתוני המשתמש הקיימים אם נמצאו, וקובץ
+                    הוראות קצר להעברה.
+                  </p>
+                  <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void window.api.openAppUserDataDir()}
+                    >
+                      פתח תיקיית נתוני האפליקציה
+                    </button>
+                    <button
+                      type="button"
+                      className="btn primary"
+                      disabled={isPackagingTransfer}
+                      onClick={() => {
+                        setTransferMsg(null)
+                        setTransferProgress(null)
+                        setTransferBuildChoiceOpen((prev) => !prev)
+                      }}
+                    >
+                      {isPackagingTransfer ? 'אורז...' : 'ארוז התקנה ונתונים להעברה'}
+                    </button>
+                    {transferRevealPath && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void window.api.showInFolder(transferRevealPath)}
+                      >
+                        פתח תיקיית תוצאה
+                      </button>
+                    )}
+                  </div>
+                  {transferBuildChoiceOpen && !isPackagingTransfer && (
+                    <div className="transfer-build-choice-card">
+                      <p className="transfer-build-choice-title">איך לארוז את המתקין?</p>
+                      <p className="muted small" style={{ marginTop: 0, marginBottom: '0.65rem' }}>
+                        אפשר להשתמש במתקין קיים כדי לחסוך זמן, או לבנות מתקין חדש ועדכני לפני האריזה.
+                      </p>
+                      <div className="toolbar" style={{ marginBottom: 0 }}>
+                        <button type="button" className="btn primary" onClick={() => void handlePackageForTransfer(true)}>
+                          בנה מתקין חדש
+                        </button>
+                        <button type="button" className="btn" onClick={() => void handlePackageForTransfer(false)}>
+                          השתמש במתקין קיים
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setTransferBuildChoiceOpen(false)}
+                        >
+                          ביטול
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {transferMsg && (
+                    <p className="muted small" style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>
+                      {transferMsg}
+                    </p>
+                  )}
+                  {transferProgress && (
+                    <div
+                      className={`transfer-progress-card ${transferProgress.stage === 'error' ? 'error' : transferProgress.stage === 'done' ? 'done' : ''}`}
+                    >
+                      <div className="transfer-progress-head">
+                        <div>
+                          <p className="transfer-progress-title">התקדמות האריזה</p>
+                          <p className="transfer-progress-stage">{transferProgress.message}</p>
+                        </div>
+                        <div className="transfer-progress-percent">{transferProgressPercent}%</div>
+                      </div>
+                      <div className="transfer-progress-bar" aria-hidden="true">
+                        <div
+                          className="transfer-progress-bar-fill"
+                          style={{ width: `${transferProgressPercent}%` }}
+                        />
+                      </div>
+                      {transferProgress.detail && (
+                        <p className="transfer-progress-detail">{transferProgress.detail}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
             {settingsView === 'about' && (
               <>
                 <p className="muted small">
@@ -1353,7 +1718,7 @@ export default function App() {
             </p>
             <div className="tags">
               {searchTagsModal.tags.map((t) => (
-                <span key={t} className="tag">
+                <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
                   {formatTagLabel(t)}
                 </span>
               ))}
@@ -1377,7 +1742,951 @@ export default function App() {
   )
 }
 
-function FaceRecognitionTab() {
+function WatermarkEditorTab() {
+  const defaultWatermarkAssetUrl = useMemo(() => new URL('./icon.png', window.location.href).toString(), [])
+  const [baseImagePath, setBaseImagePath] = useState<string | null>(null)
+  const [baseImageSrc, setBaseImageSrc] = useState<string | null>(null)
+  const [baseImageSize, setBaseImageSize] = useState<{ width: number; height: number } | null>(null)
+  const [watermarkImagePath, setWatermarkImagePath] = useState<string | null>(defaultWatermarkAssetUrl)
+  const [watermarkImageSrc, setWatermarkImageSrc] = useState<string | null>(defaultWatermarkAssetUrl)
+  const [defaultWatermarkAspectRatio, setDefaultWatermarkAspectRatio] = useState(1)
+  const [watermarkAspectRatio, setWatermarkAspectRatio] = useState(1)
+  const [watermarkRect, setWatermarkRect] = useState<WatermarkSelectionRect | null>(null)
+  const [selectionRect, setSelectionRect] = useState<WatermarkSelectionRect | null>(null)
+  const [activeTool, setActiveTool] = useState<WatermarkToolMode>('none')
+  const [isToolsOpen, setIsToolsOpen] = useState(false)
+  const [selectionShape, setSelectionShape] = useState<WatermarkSelectionShape>('rect')
+  const [blurStrength, setBlurStrength] = useState(14)
+  const [blurFeather, setBlurFeather] = useState(24)
+  const [focusSeparation, setFocusSeparation] = useState(45)
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.35)
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportMsg, setExportMsg] = useState<string | null>(null)
+  const [editorError, setEditorError] = useState<string | null>(null)
+  const isCustomWatermark = !!watermarkImagePath && watermarkImagePath !== defaultWatermarkAssetUrl
+  const isSelectionToolActive = activeTool === 'crop' || activeTool === 'blur'
+
+  const baseImgRef = useRef<HTMLImageElement | null>(null)
+  const dragStateRef = useRef<{
+    mode: 'move' | 'resize'
+    startClientX: number
+    startClientY: number
+    startRect: WatermarkSelectionRect
+  } | null>(null)
+  const selectionDragStateRef = useRef<{
+    mode: WatermarkSelectionHandle
+    startClientX: number
+    startClientY: number
+    startRect: WatermarkSelectionRect
+  } | null>(null)
+
+  const updateStageSize = useCallback(() => {
+    const imgEl = baseImgRef.current
+    if (!imgEl) return
+    const rect = imgEl.getBoundingClientRect()
+    setStageSize({
+      width: Math.max(0, rect.width),
+      height: Math.max(0, rect.height)
+    })
+  }, [])
+
+  const placeDefaultWatermark = useCallback((baseWidth: number, baseHeight: number, aspectRatio: number) => {
+    const ratio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1
+    const width = clampNumber(Math.round(baseWidth * 0.22), 48, Math.max(48, baseWidth))
+    const height = clampNumber(Math.round(width / ratio), 48, Math.max(48, baseHeight))
+    return {
+      width,
+      height,
+      x: Math.max(0, baseWidth - width - 24),
+      y: Math.max(0, baseHeight - height - 24)
+    }
+  }, [])
+
+  const createDefaultSelectionRect = useCallback((baseWidth: number, baseHeight: number) => {
+    const width = Math.max(80, Math.round(baseWidth * 0.72))
+    const height = Math.max(80, Math.round(baseHeight * 0.72))
+    return {
+      width,
+      height,
+      x: Math.max(0, Math.round((baseWidth - width) / 2)),
+      y: Math.max(0, Math.round((baseHeight - height) / 2))
+    }
+  }, [])
+
+  const getPlacementBounds = useCallback(
+    (size: { width: number; height: number }, crop: WatermarkSelectionRect | null) => {
+      if (!crop) return { x: 0, y: 0, width: size.width, height: size.height }
+      return crop
+    },
+    []
+  )
+
+  const clampWatermarkIntoBounds = useCallback(
+    (
+      rect: WatermarkSelectionRect,
+      size: { width: number; height: number },
+      crop: WatermarkSelectionRect | null
+    ): WatermarkSelectionRect => {
+      const bounds = getPlacementBounds(size, crop)
+      const width = clampNumber(rect.width, 40, Math.max(40, bounds.width))
+      const height = clampNumber(rect.height, 40, Math.max(40, bounds.height))
+      return {
+        width,
+        height,
+        x: Math.round(clampNumber(rect.x, bounds.x, Math.max(bounds.x, bounds.x + bounds.width - width))),
+        y: Math.round(clampNumber(rect.y, bounds.y, Math.max(bounds.y, bounds.y + bounds.height - height)))
+      }
+    },
+    [getPlacementBounds]
+  )
+
+  const currentWatermarkBounds = useMemo(
+    () => (activeTool === 'crop' ? selectionRect : null),
+    [activeTool, selectionRect]
+  )
+
+  const selectionHandles = useMemo(
+    () =>
+      (selectionShape === 'circle'
+        ? (['n', 's', 'e', 'w'] as const)
+        : (['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const)),
+    [selectionShape]
+  )
+
+  const blurStrengthPreviewPx = useMemo(() => {
+    const normalized = clampNumber(blurStrength, 0, 40) / 40
+    return clampNumber(Math.round(Math.pow(normalized, 1.45) * 36), 0, 36)
+  }, [blurStrength])
+
+  const blurBackdropFilter = useMemo(() => {
+    const brightness = clampNumber(100 - focusSeparation * 0.22, 62, 100)
+    const contrast = clampNumber(100 - focusSeparation * 0.28, 54, 100)
+    return `blur(${blurStrengthPreviewPx}px) brightness(${brightness}%) contrast(${contrast}%)`
+  }, [blurStrengthPreviewPx, focusSeparation])
+
+  const blurOverlayTint = useMemo(
+    () => `rgba(8, 12, 22, ${0.06 + focusSeparation / 500})`,
+    [focusSeparation]
+  )
+
+  const blurFeatherPreviewPx = useMemo(() => {
+    if (!selectionRect || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return 0
+    const scaleX = stageSize.width / baseImageSize.width
+    const scaleY = stageSize.height / baseImageSize.height
+    const minDimension = Math.max(1, Math.min(selectionRect.width * scaleX, selectionRect.height * scaleY))
+    return clampNumber(Math.round(minDimension * 0.7 * (blurFeather / 100)), 0, Math.round(minDimension * 0.8))
+  }, [baseImageSize, blurFeather, selectionRect, stageSize.height, stageSize.width])
+
+  const ensureSelectionRect = useCallback(() => {
+    if (!baseImageSize) return
+    setSelectionRect((prev) => prev ?? createDefaultSelectionRect(baseImageSize.width, baseImageSize.height))
+  }, [baseImageSize, createDefaultSelectionRect])
+
+  const blurSliderInteractionProps = {}
+
+  const activateTool = useCallback(
+    (tool: WatermarkToolMode) => {
+      if (!baseImageSize && tool !== 'none') {
+        setEditorError('בחר תמונה ראשית לפני שימוש בכלים.')
+        return
+      }
+      setEditorError(null)
+      setActiveTool(tool)
+      if (tool !== 'none') ensureSelectionRect()
+    },
+    [baseImageSize, ensureSelectionRect]
+  )
+
+  function resetEditor(): void {
+    setBaseImagePath(null)
+    setBaseImageSrc(null)
+    setBaseImageSize(null)
+    setWatermarkImagePath(defaultWatermarkAssetUrl)
+    setWatermarkImageSrc(defaultWatermarkAssetUrl)
+    setWatermarkAspectRatio(defaultWatermarkAspectRatio)
+    setWatermarkRect(null)
+    setSelectionRect(null)
+    setActiveTool('none')
+    setIsToolsOpen(false)
+    setSelectionShape('rect')
+    setBlurStrength(14)
+    setBlurFeather(24)
+    setFocusSeparation(45)
+    setWatermarkOpacity(0.35)
+    setStageSize({ width: 0, height: 0 })
+    setIsExporting(false)
+    setExportMsg(null)
+    setEditorError(null)
+    dragStateRef.current = null
+    selectionDragStateRef.current = null
+  }
+
+  useEffect(() => {
+    void loadImageDimensions(defaultWatermarkAssetUrl)
+      .then((dims) => {
+        const ratio = dims.width / Math.max(1, dims.height)
+        setDefaultWatermarkAspectRatio(ratio)
+        setWatermarkAspectRatio(ratio)
+      })
+      .catch(() => {
+        setWatermarkImagePath(null)
+        setWatermarkImageSrc(null)
+      })
+  }, [defaultWatermarkAssetUrl])
+
+  useEffect(() => {
+    if (!baseImageSrc) return
+    updateStageSize()
+    const imgEl = baseImgRef.current
+    if (!imgEl || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => updateStageSize())
+    observer.observe(imgEl)
+    window.addEventListener('resize', updateStageSize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateStageSize)
+    }
+  }, [baseImageSrc, updateStageSize])
+
+  useEffect(() => {
+    if (activeTool !== 'blur' || !baseImagePath || !selectionRect) {
+      return
+    }
+  }, [activeTool, baseImagePath, selectionRect])
+
+  useEffect(() => {
+    if (!baseImageSize || activeTool === 'none') return
+    setSelectionRect((prev) => prev ?? createDefaultSelectionRect(baseImageSize.width, baseImageSize.height))
+  }, [activeTool, baseImageSize, createDefaultSelectionRect])
+
+  useEffect(() => {
+    if (!baseImageSize || !watermarkRect) return
+    setWatermarkRect((prev) => (prev ? clampWatermarkIntoBounds(prev, baseImageSize, currentWatermarkBounds) : prev))
+  }, [baseImageSize, clampWatermarkIntoBounds, currentWatermarkBounds, watermarkRect])
+
+  const endDrag = useCallback(() => {
+    dragStateRef.current = null
+    selectionDragStateRef.current = null
+  }, [])
+
+  const handleGlobalMouseMove = useCallback(
+    (event: MouseEvent) => {
+      const drag = dragStateRef.current
+      if (!drag || !baseImageSize || !watermarkRect || stageSize.width <= 0 || stageSize.height <= 0) return
+
+      const scaleX = baseImageSize.width / stageSize.width
+      const scaleY = baseImageSize.height / stageSize.height
+      const deltaX = (event.clientX - drag.startClientX) * scaleX
+      const deltaY = (event.clientY - drag.startClientY) * scaleY
+      const bounds = getPlacementBounds(baseImageSize, currentWatermarkBounds)
+
+      if (drag.mode === 'move') {
+        const width = drag.startRect.width
+        const height = drag.startRect.height
+        setWatermarkRect({
+          ...drag.startRect,
+          x: Math.round(clampNumber(drag.startRect.x + deltaX, bounds.x, Math.max(bounds.x, bounds.x + bounds.width - width))),
+          y: Math.round(clampNumber(drag.startRect.y + deltaY, bounds.y, Math.max(bounds.y, bounds.y + bounds.height - height)))
+        })
+        return
+      }
+
+      const ratio = watermarkAspectRatio > 0 ? watermarkAspectRatio : drag.startRect.width / Math.max(1, drag.startRect.height)
+      const widthDelta = Math.max(deltaX, deltaY * ratio)
+      let nextWidth = clampNumber(drag.startRect.width + widthDelta, 40, Math.max(40, bounds.x + bounds.width - drag.startRect.x))
+      let nextHeight = nextWidth / ratio
+      if (drag.startRect.y + nextHeight > bounds.y + bounds.height) {
+        nextHeight = bounds.y + bounds.height - drag.startRect.y
+        nextWidth = nextHeight * ratio
+      }
+      setWatermarkRect({
+        ...drag.startRect,
+        width: Math.round(Math.max(40, nextWidth)),
+        height: Math.round(Math.max(40, nextHeight))
+      })
+    },
+    [baseImageSize, currentWatermarkBounds, getPlacementBounds, stageSize.height, stageSize.width, watermarkAspectRatio, watermarkRect]
+  )
+
+  const handleGlobalSelectionMouseMove = useCallback(
+    (event: MouseEvent) => {
+      const drag = selectionDragStateRef.current
+      if (!drag || !baseImageSize || !selectionRect || stageSize.width <= 0 || stageSize.height <= 0) return
+
+      const scaleX = baseImageSize.width / stageSize.width
+      const scaleY = baseImageSize.height / stageSize.height
+      const deltaX = (event.clientX - drag.startClientX) * scaleX
+      const deltaY = (event.clientY - drag.startClientY) * scaleY
+
+      if (drag.mode === 'move') {
+        const width = drag.startRect.width
+        const height = drag.startRect.height
+        const nextSelection = {
+          ...drag.startRect,
+          x: Math.round(clampNumber(drag.startRect.x + deltaX, 0, Math.max(0, baseImageSize.width - width))),
+          y: Math.round(clampNumber(drag.startRect.y + deltaY, 0, Math.max(0, baseImageSize.height - height)))
+        }
+        setSelectionRect(nextSelection)
+        if (activeTool === 'crop') {
+          setWatermarkRect((prev) => (prev ? clampWatermarkIntoBounds(prev, baseImageSize, nextSelection) : prev))
+        }
+        return
+      }
+
+      let nextX = drag.startRect.x
+      let nextY = drag.startRect.y
+      let nextWidth = drag.startRect.width
+      let nextHeight = drag.startRect.height
+
+      if (drag.mode.includes('e')) {
+        nextWidth = clampNumber(drag.startRect.width + deltaX, 80, Math.max(80, baseImageSize.width - drag.startRect.x))
+      }
+      if (drag.mode.includes('s')) {
+        nextHeight = clampNumber(drag.startRect.height + deltaY, 80, Math.max(80, baseImageSize.height - drag.startRect.y))
+      }
+      if (drag.mode.includes('w')) {
+        const proposedX = clampNumber(drag.startRect.x + deltaX, 0, drag.startRect.x + drag.startRect.width - 80)
+        nextWidth = drag.startRect.width - (proposedX - drag.startRect.x)
+        nextX = proposedX
+      }
+      if (drag.mode.includes('n')) {
+        const proposedY = clampNumber(drag.startRect.y + deltaY, 0, drag.startRect.y + drag.startRect.height - 80)
+        nextHeight = drag.startRect.height - (proposedY - drag.startRect.y)
+        nextY = proposedY
+      }
+
+      const nextSelection = {
+        x: Math.round(nextX),
+        y: Math.round(nextY),
+        width: Math.round(nextWidth),
+        height: Math.round(nextHeight)
+      }
+      setSelectionRect(nextSelection)
+      if (activeTool === 'crop') {
+        setWatermarkRect((prev) => (prev ? clampWatermarkIntoBounds(prev, baseImageSize, nextSelection) : prev))
+      }
+    },
+    [activeTool, baseImageSize, clampWatermarkIntoBounds, selectionRect, stageSize.height, stageSize.width]
+  )
+
+  useEffect(() => {
+    const onMouseUp = () => endDrag()
+    window.addEventListener('mousemove', handleGlobalMouseMove)
+    window.addEventListener('mousemove', handleGlobalSelectionMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove)
+      window.removeEventListener('mousemove', handleGlobalSelectionMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [endDrag, handleGlobalMouseMove, handleGlobalSelectionMouseMove])
+
+  async function pickBaseImage(): Promise<void> {
+    setEditorError(null)
+    setExportMsg(null)
+    const nextPath = await window.api.pickImage()
+    if (!nextPath) return
+    const nextSrc = await window.api.getImageDataUrl(nextPath)
+    if (!nextSrc) {
+      setEditorError('טעינת התמונה הראשית נכשלה.')
+      return
+    }
+    const dims = await loadImageDimensions(nextSrc)
+    setBaseImagePath(nextPath)
+    setBaseImageSrc(nextSrc)
+    setBaseImageSize(dims)
+    const nextSelection = activeTool !== 'none' ? createDefaultSelectionRect(dims.width, dims.height) : selectionRect
+    if (watermarkImageSrc) {
+      const defaultRect = placeDefaultWatermark(dims.width, dims.height, watermarkAspectRatio)
+      setWatermarkRect(
+        clampWatermarkIntoBounds(defaultRect, dims, activeTool === 'crop' ? nextSelection : null)
+      )
+    } else {
+      setWatermarkRect(null)
+    }
+    setSelectionRect(nextSelection)
+  }
+
+  async function pickWatermarkImage(): Promise<void> {
+    setEditorError(null)
+    setExportMsg(null)
+    const nextPath = await window.api.pickImage()
+    if (!nextPath) return
+    const nextSrc = await window.api.getImageDataUrl(nextPath)
+    if (!nextSrc) {
+      setEditorError('טעינת סימן המים נכשלה.')
+      return
+    }
+    const dims = await loadImageDimensions(nextSrc)
+    const ratio = dims.width / Math.max(1, dims.height)
+    setWatermarkImagePath(nextPath)
+    setWatermarkImageSrc(nextSrc)
+    setWatermarkAspectRatio(ratio)
+    if (baseImageSize) {
+      const nextRect = placeDefaultWatermark(baseImageSize.width, baseImageSize.height, ratio)
+      setWatermarkRect(clampWatermarkIntoBounds(nextRect, baseImageSize, currentWatermarkBounds))
+    }
+  }
+
+  function resetWatermarkToDefault(): void {
+    setWatermarkImagePath(defaultWatermarkAssetUrl)
+    setWatermarkImageSrc(defaultWatermarkAssetUrl)
+    setWatermarkAspectRatio(defaultWatermarkAspectRatio)
+    if (baseImageSize) {
+      const nextRect = placeDefaultWatermark(baseImageSize.width, baseImageSize.height, defaultWatermarkAspectRatio)
+      setWatermarkRect(clampWatermarkIntoBounds(nextRect, baseImageSize, currentWatermarkBounds))
+    }
+  }
+
+  function startDrag(event: React.MouseEvent, mode: 'move' | 'resize'): void {
+    if (!watermarkRect) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragStateRef.current = {
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startRect: watermarkRect
+    }
+  }
+
+  function startSelectionDrag(event: React.MouseEvent, mode: WatermarkSelectionHandle): void {
+    if (!selectionRect) return
+    event.preventDefault()
+    event.stopPropagation()
+    selectionDragStateRef.current = {
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startRect: selectionRect
+    }
+  }
+
+  async function exportImage(): Promise<void> {
+    if (!baseImagePath || !watermarkImagePath || !watermarkRect) {
+      setEditorError('יש לבחור תמונה ראשית וסימן מים לפני הייצוא.')
+      return
+    }
+    if (activeTool !== 'none' && !selectionRect) {
+      setEditorError('בחר אזור על התמונה לפני הייצוא.')
+      return
+    }
+    setEditorError(null)
+    setExportMsg(null)
+    setIsExporting(true)
+    try {
+      const res = await window.api.exportWatermarkedImage({
+        baseImagePath,
+        watermarkImagePath,
+        blurPreviewScale:
+          activeTool === 'blur' && baseImageSize && stageSize.width > 0 && stageSize.height > 0
+            ? Math.min(stageSize.width / baseImageSize.width, stageSize.height / baseImageSize.height)
+            : undefined,
+        x: watermarkRect.x,
+        y: watermarkRect.y,
+        width: watermarkRect.width,
+        height: watermarkRect.height,
+        opacity: watermarkOpacity,
+        toolMode: activeTool,
+        selectionShape,
+        selectionX: selectionRect?.x,
+        selectionY: selectionRect?.y,
+        selectionWidth: selectionRect?.width,
+        selectionHeight: selectionRect?.height,
+        blurStrength,
+        blurFeather,
+        focusSeparation
+      })
+      if (!res.ok) {
+        if (!res.cancelled) setEditorError(res.error ?? 'ייצוא התמונה נכשל.')
+        return
+      }
+      setExportMsg(`התמונה יוצאה בהצלחה: ${res.filePath}`)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const displayRect = useMemo(() => {
+    if (!watermarkRect || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return null
+    const scaleX = stageSize.width / baseImageSize.width
+    const scaleY = stageSize.height / baseImageSize.height
+    return {
+      left: watermarkRect.x * scaleX,
+      top: watermarkRect.y * scaleY,
+      width: watermarkRect.width * scaleX,
+      height: watermarkRect.height * scaleY
+    }
+  }, [baseImageSize, stageSize.height, stageSize.width, watermarkRect])
+
+  const displaySelectionRect = useMemo(() => {
+    if (!selectionRect || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return null
+    const scaleX = stageSize.width / baseImageSize.width
+    const scaleY = stageSize.height / baseImageSize.height
+    return {
+      left: selectionRect.x * scaleX,
+      top: selectionRect.y * scaleY,
+      width: selectionRect.width * scaleX,
+      height: selectionRect.height * scaleY
+    }
+  }, [baseImageSize, selectionRect, stageSize.height, stageSize.width])
+
+  const circleFeatherPreviewGeometry = useMemo(() => {
+    if (activeTool !== 'blur' || selectionShape !== 'circle' || !displaySelectionRect) return null
+    const feather = blurFeatherPreviewPx
+    return {
+      inner: displaySelectionRect,
+      outer: {
+        left: displaySelectionRect.left - feather,
+        top: displaySelectionRect.top - feather,
+        width: displaySelectionRect.width + feather * 2,
+        height: displaySelectionRect.height + feather * 2
+      },
+      feather
+    }
+  }, [activeTool, blurFeatherPreviewPx, displaySelectionRect, selectionShape])
+
+  const rectFeatherPreviewGeometry = useMemo(() => {
+    if (activeTool !== 'blur' || selectionShape !== 'rect' || !displaySelectionRect) return null
+    const feather = blurFeatherPreviewPx
+    return {
+      inner: displaySelectionRect,
+      outer: {
+        left: displaySelectionRect.left - feather,
+        top: displaySelectionRect.top - feather,
+        width: displaySelectionRect.width + feather * 2,
+        height: displaySelectionRect.height + feather * 2
+      },
+      feather
+    }
+  }, [activeTool, blurFeatherPreviewPx, displaySelectionRect, selectionShape])
+
+  const circleBlurMaskStyle = useMemo<CSSProperties | null>(() => {
+    if (!circleFeatherPreviewGeometry) return null
+    const outerRadiusX = Math.max(1, circleFeatherPreviewGeometry.outer.width / 2)
+    const outerRadiusY = Math.max(1, circleFeatherPreviewGeometry.outer.height / 2)
+    const innerRadiusX = Math.max(1, circleFeatherPreviewGeometry.inner.width / 2)
+    const innerRadiusY = Math.max(1, circleFeatherPreviewGeometry.inner.height / 2)
+    const centerX = circleFeatherPreviewGeometry.outer.left + outerRadiusX
+    const centerY = circleFeatherPreviewGeometry.outer.top + outerRadiusY
+    const innerPercent = clampNumber(
+      Math.round(Math.min(innerRadiusX / outerRadiusX, innerRadiusY / outerRadiusY) * 100),
+      6,
+      100
+    )
+    const mask = `radial-gradient(ellipse ${outerRadiusX}px ${outerRadiusY}px at ${centerX}px ${centerY}px, transparent 0, transparent ${innerPercent}%, black 100%)`
+    return {
+      backdropFilter: blurBackdropFilter,
+      WebkitBackdropFilter: blurBackdropFilter,
+      background: blurOverlayTint,
+      WebkitMaskImage: mask,
+      maskImage: mask
+    }
+  }, [blurBackdropFilter, blurOverlayTint, circleFeatherPreviewGeometry])
+
+  const blurPanes = useMemo(() => {
+    if (activeTool !== 'blur' || selectionShape !== 'rect' || !displaySelectionRect || stageSize.width <= 0 || stageSize.height <= 0) {
+      return []
+    }
+    const { left, top, width, height } = displaySelectionRect
+    const right = left + width
+    const bottom = top + height
+    const feather = blurFeatherPreviewPx
+    return [
+      {
+        left: 0,
+        top: 0,
+        width: stageSize.width,
+        height: top + feather,
+        maskImage:
+          feather > 0 ? `linear-gradient(to bottom, black calc(100% - ${feather}px), transparent 100%)` : undefined
+      },
+      {
+        left: 0,
+        top,
+        width: left + feather,
+        height,
+        maskImage:
+          feather > 0 ? `linear-gradient(to right, black calc(100% - ${feather}px), transparent 100%)` : undefined
+      },
+      {
+        left: Math.max(0, right - feather),
+        top,
+        width: Math.max(0, stageSize.width - right + feather),
+        height,
+        maskImage:
+          feather > 0 ? `linear-gradient(to left, black calc(100% - ${feather}px), transparent 100%)` : undefined
+      },
+      {
+        left: 0,
+        top: Math.max(0, bottom - feather),
+        width: stageSize.width,
+        height: Math.max(0, stageSize.height - bottom + feather),
+        maskImage:
+          feather > 0 ? `linear-gradient(to top, black calc(100% - ${feather}px), transparent 100%)` : undefined
+      }
+    ].filter((pane) => pane.width > 0 && pane.height > 0)
+  }, [activeTool, blurFeatherPreviewPx, displaySelectionRect, selectionShape, stageSize.height, stageSize.width])
+
+  const circleFeatherBandStyle = useMemo<CSSProperties | null>(() => {
+    if (!circleFeatherPreviewGeometry || circleFeatherPreviewGeometry.feather <= 0) return null
+    return {
+      left: circleFeatherPreviewGeometry.outer.left,
+      top: circleFeatherPreviewGeometry.outer.top,
+      width: circleFeatherPreviewGeometry.outer.width,
+      height: circleFeatherPreviewGeometry.outer.height,
+      borderRadius: '9999px',
+      boxShadow: `inset 0 0 0 ${circleFeatherPreviewGeometry.feather}px rgba(103, 232, 249, 0.12)`
+    }
+  }, [circleFeatherPreviewGeometry])
+
+  const circleFeatherOuterStyle = useMemo<CSSProperties | null>(() => {
+    if (!circleFeatherPreviewGeometry || circleFeatherPreviewGeometry.feather <= 0) return null
+    return {
+      left: circleFeatherPreviewGeometry.outer.left,
+      top: circleFeatherPreviewGeometry.outer.top,
+      width: circleFeatherPreviewGeometry.outer.width,
+      height: circleFeatherPreviewGeometry.outer.height,
+      borderRadius: '9999px'
+    }
+  }, [circleFeatherPreviewGeometry])
+
+  const rectFeatherBandStyle = useMemo<CSSProperties | null>(() => {
+    if (!rectFeatherPreviewGeometry || rectFeatherPreviewGeometry.feather <= 0) return null
+    return {
+      left: rectFeatherPreviewGeometry.outer.left,
+      top: rectFeatherPreviewGeometry.outer.top,
+      width: rectFeatherPreviewGeometry.outer.width,
+      height: rectFeatherPreviewGeometry.outer.height,
+      borderRadius: '16px',
+      boxShadow: `inset 0 0 0 ${rectFeatherPreviewGeometry.feather}px rgba(103, 232, 249, 0.12)`
+    }
+  }, [rectFeatherPreviewGeometry])
+
+  const rectFeatherOuterStyle = useMemo<CSSProperties | null>(() => {
+    if (!rectFeatherPreviewGeometry || rectFeatherPreviewGeometry.feather <= 0) return null
+    return {
+      left: rectFeatherPreviewGeometry.outer.left,
+      top: rectFeatherPreviewGeometry.outer.top,
+      width: rectFeatherPreviewGeometry.outer.width,
+      height: rectFeatherPreviewGeometry.outer.height,
+      borderRadius: '16px'
+    }
+  }, [rectFeatherPreviewGeometry])
+
+  const selectionOverlayStyle = useMemo<CSSProperties | null>(() => {
+    if (!displaySelectionRect || activeTool === 'none') return null
+    return {
+      left: displaySelectionRect.left,
+      top: displaySelectionRect.top,
+      width: displaySelectionRect.width,
+      height: displaySelectionRect.height,
+      borderRadius: selectionShape === 'circle' ? '9999px' : '12px'
+    }
+  }, [activeTool, displaySelectionRect, selectionShape])
+
+  const toolSummary =
+    activeTool === 'crop'
+      ? `חיתוך פעיל: ${selectionShape === 'circle' ? 'עגול' : 'מרובע'}.`
+      : activeTool === 'blur'
+        ? `טשטוש רקע פעיל: ${selectionShape === 'circle' ? 'בחירה עגולה' : 'בחירה מרובעת'}.`
+        : 'אין כרגע כלי עריכה פעיל.'
+
+  const usesExactBlurPreview = false
+  const previewImageSrc = baseImageSrc
+
+  return (
+    <div className="watermark-editor-tab">
+      <p className="muted small" style={{ marginTop: 0 }}>
+        טען תמונה ראשית, גרור את סימן המים למיקום הרצוי, והשתמש בכלים לחיתוך או לטשטוש רקע לפני הייצוא.
+      </p>
+
+      {(editorError || exportMsg) && (
+        <p className="muted" style={{ color: editorError ? 'var(--danger)' : '#86efac', marginTop: '0.6rem' }}>
+          {editorError ?? exportMsg}
+        </p>
+      )}
+
+      <div className="watermark-workspace">
+        <div className="watermark-side-panel">
+          <div className="toolbar watermark-side-actions">
+            <button type="button" className="btn primary" onClick={() => void pickBaseImage()}>
+              בחר תמונה ראשית
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => (isCustomWatermark ? resetWatermarkToDefault() : void pickWatermarkImage())}
+              disabled={!watermarkImageSrc && isCustomWatermark}
+            >
+              {isCustomWatermark ? 'חזור ללוגו' : 'העלה סימן מים אחר'}
+            </button>
+            <div className="watermark-action-row">
+              <button
+                type="button"
+                className={`btn ${isToolsOpen ? 'primary' : ''}`}
+                onClick={() => setIsToolsOpen((prev) => !prev)}
+                disabled={!baseImageSrc}
+              >
+                כלים
+              </button>
+              <button
+                type="button"
+                className="btn primary watermark-export-btn"
+                onClick={() => void exportImage()}
+                disabled={!baseImagePath || !watermarkImagePath || !watermarkRect || isExporting}
+                title={isExporting ? 'מייצא...' : 'ייצא תמונה'}
+                aria-label={isExporting ? 'מייצא' : 'ייצא תמונה'}
+              >
+                {isExporting ? (
+                  <span className="watermark-export-spinner" aria-hidden="true" />
+                ) : (
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M12 3v10m0 0 4-4m-4 4-4-4M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+              </button>
+            </div>
+            {isToolsOpen && (
+              <div className="watermark-tools-panel">
+                <div className="watermark-tool-icons-row">
+                  <button
+                    type="button"
+                    className={`btn watermark-tool-icon-btn ${activeTool === 'crop' ? 'primary' : ''}`}
+                    onClick={() => activateTool('crop')}
+                    title="חיתוך"
+                    aria-label="חיתוך"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M4.5 10.25A.75.75 0 0 1 3.75 9.5V6A2.25 2.25 0 0 1 6 3.75h3.5a.75.75 0 0 1 0 1.5H6a.75.75 0 0 0-.75.75v3.5a.75.75 0 0 1-.75.75Zm10 0a.75.75 0 0 1-.75-.75V6a.75.75 0 0 1 .75-.75H18A2.25 2.25 0 0 1 20.25 6v3.5a.75.75 0 0 1-1.5 0V6a.75.75 0 0 0-.75-.75h-3.5a.75.75 0 0 1 0-1.5H18A2.25 2.25 0 0 1 20.25 6v3.5a.75.75 0 0 1-.75.75ZM6 20.25A2.25 2.25 0 0 1 3.75 18v-3.5a.75.75 0 0 1 1.5 0V18c0 .41.34.75.75.75h3.5a.75.75 0 0 1 0 1.5H6Zm8.5 0a.75.75 0 0 1 0-1.5H18a.75.75 0 0 0 .75-.75v-3.5a.75.75 0 0 1 1.5 0V18A2.25 2.25 0 0 1 18 20.25h-3.5Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn watermark-tool-icon-btn ${activeTool === 'blur' ? 'primary' : ''}`}
+                    onClick={() => activateTool('blur')}
+                    title="טשטוש רקע"
+                    aria-label="טשטוש רקע"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M12.46 2.6c.31.42 7.54 8.22 7.54 13.08A7.98 7.98 0 0 1 12 23.65 7.98 7.98 0 0 1 4 15.68C4 10.82 11.23 3.02 11.54 2.6a.58.58 0 0 1 .92 0Zm-.46 2.71c-2.2 2.54-6.83 8.37-6.83 10.37A6.83 6.83 0 0 0 12 22.52a6.83 6.83 0 0 0 6.83-6.84c0-2-4.63-7.83-6.83-10.37Zm3.21 7.66c1.55 0 2.8 1.33 2.8 2.98 0 1.37-.91 2.53-2.16 2.87-.23.06-.46-.16-.38-.39.11-.35.17-.72.17-1.11 0-1.9-1.37-3.48-3.16-3.78-.24-.04-.34-.33-.17-.5a3.38 3.38 0 0 1 2.9-1.07Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn watermark-tool-icon-btn ${selectionShape === 'rect' ? 'primary' : ''}`}
+                    onClick={() => setSelectionShape('rect')}
+                    title="בחירה מרובעת"
+                    aria-label="בחירה מרובעת"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M7 4.75h10A2.25 2.25 0 0 1 19.25 7v10A2.25 2.25 0 0 1 17 19.25H7A2.25 2.25 0 0 1 4.75 17V7A2.25 2.25 0 0 1 7 4.75Zm0 1.5A.75.75 0 0 0 6.25 7v10c0 .41.34.75.75.75h10c.41 0 .75-.34.75-.75V7a.75.75 0 0 0-.75-.75H7Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn watermark-tool-icon-btn ${selectionShape === 'circle' ? 'primary' : ''}`}
+                    onClick={() => setSelectionShape('circle')}
+                    title="בחירה עגולה"
+                    aria-label="בחירה עגולה"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M12 4.75a7.25 7.25 0 1 1 0 14.5 7.25 7.25 0 0 1 0-14.5Zm0 1.5a5.75 5.75 0 1 0 0 11.5 5.75 5.75 0 0 0 0-11.5Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </div>
+                <button type="button" className="btn watermark-tool-cancel-btn" onClick={() => setActiveTool('none')}>
+                  ביטול בחירת כלי
+                </button>
+                {activeTool !== 'none' && (
+                  <div className="watermark-tools-settings">
+                    {activeTool === 'blur' && (
+                      <>
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <label>עוצמת טשטוש: {blurStrength}</label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={40}
+                            step={1}
+                            value={blurStrength}
+                            onChange={(e) => setBlurStrength(Number(e.target.value))}
+                            {...blurSliderInteractionProps}
+                          />
+                        </div>
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <label>ריכוך: {blurFeather}</label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={blurFeather}
+                            onChange={(e) => setBlurFeather(Number(e.target.value))}
+                            {...blurSliderInteractionProps}
+                          />
+                        </div>
+                        <div className="field" style={{ marginBottom: 0 }}>
+                          <label>רמת ניגודיות בין הבחירה לרקע: {focusSeparation}%</label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={focusSeparation}
+                            onChange={(e) => setFocusSeparation(Number(e.target.value))}
+                            {...blurSliderInteractionProps}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <button type="button" className="btn" onClick={resetEditor}>
+              ביטול
+            </button>
+          </div>
+
+          <div className="field">
+            <label>שקיפות סימן המים: {Math.round(watermarkOpacity * 100)}%</label>
+            <input
+              type="range"
+              min={5}
+              max={100}
+              step={1}
+              value={Math.round(watermarkOpacity * 100)}
+              onChange={(e) => setWatermarkOpacity(Number(e.target.value) / 100)}
+              disabled={!watermarkImageSrc}
+            />
+          </div>
+
+          <div className="watermark-status-list">
+            <p className="muted small">{baseImagePath ? `תמונה ראשית: ${baseImagePath}` : 'עדיין לא נבחרה תמונה ראשית.'}</p>
+            <p className="muted small">
+              {watermarkImagePath === defaultWatermarkAssetUrl
+                ? 'סימן המים הנוכחי: לוגו המערכת (ברירת מחדל).'
+                : `סימן המים הנוכחי: ${watermarkImagePath ?? 'לא נבחר סימן מים'}`}
+            </p>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              גרור את סימן המים עם העכבר. לשינוי גודל השתמש בידית שבפינה הימנית-תחתונה.
+            </p>
+            <p className="muted small">{toolSummary}</p>
+            {isSelectionToolActive && (
+              <p className="muted small">
+                גרור את מסגרת הבחירה לשינוי מיקום. בצורה עגולה ניתן לשנות גודל רק מארבעה צדדים.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="watermark-preview-card">
+          {previewImageSrc ? (
+            <div className="watermark-stage">
+              <img ref={baseImgRef} src={previewImageSrc} alt="" onLoad={updateStageSize} />
+              {!usesExactBlurPreview && activeTool === 'blur' && selectionShape === 'rect' &&
+                blurPanes.map((pane, index) => (
+                  <div
+                    key={`blur-pane-${index}`}
+                    className="watermark-blur-pane"
+                    style={{
+                      left: pane.left,
+                      top: pane.top,
+                      width: pane.width,
+                      height: pane.height,
+                      backdropFilter: blurBackdropFilter,
+                      WebkitBackdropFilter: blurBackdropFilter,
+                      background: blurOverlayTint,
+                      maskImage: pane.maskImage,
+                      WebkitMaskImage: pane.maskImage
+                    }}
+                  />
+                ))}
+              {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherBandStyle && (
+                <div className="watermark-feather-band-rect" style={rectFeatherBandStyle} />
+              )}
+              {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherOuterStyle && (
+                <div className="watermark-feather-outer-rect" style={rectFeatherOuterStyle} />
+              )}
+              {!usesExactBlurPreview && activeTool === 'blur' && selectionShape === 'circle' && circleBlurMaskStyle && (
+                <div className="watermark-blur-mask" style={circleBlurMaskStyle} />
+              )}
+              {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherBandStyle && (
+                <div className="watermark-feather-band-circle" style={circleFeatherBandStyle} />
+              )}
+              {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherOuterStyle && (
+                <div className="watermark-feather-outer-circle" style={circleFeatherOuterStyle} />
+              )}
+              {selectionOverlayStyle && (
+                <div
+                  className={`watermark-selection-overlay ${activeTool === 'blur' ? 'blur' : 'crop'} ${selectionShape === 'circle' ? 'circle' : 'rect'}`}
+                  style={selectionOverlayStyle}
+                  onMouseDown={(e) => startSelectionDrag(e, 'move')}
+                >
+                  {selectionHandles.map((handle) => (
+                    <button
+                      key={handle}
+                      type="button"
+                      className={`watermark-crop-handle watermark-crop-handle-${handle}`}
+                      title="שנה גודל בחירה"
+                      onMouseDown={(e) => startSelectionDrag(e, handle)}
+                    />
+                  ))}
+                </div>
+              )}
+              {watermarkImageSrc && displayRect && (
+                <div
+                  className="watermark-overlay-item"
+                  style={{
+                    left: displayRect.left,
+                    top: displayRect.top,
+                    width: displayRect.width,
+                    height: displayRect.height,
+                    opacity: watermarkOpacity
+                  }}
+                  onMouseDown={(e) => startDrag(e, 'move')}
+                >
+                  <img src={watermarkImageSrc} alt="" draggable={false} />
+                  <button
+                    type="button"
+                    className="watermark-resize-handle"
+                    title="שנה גודל"
+                    onMouseDown={(e) => startDrag(e, 'resize')}
+                  />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="watermark-empty-state">בחר תמונה ראשית כדי להתחיל לערוך סימן מים.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FaceRecognitionTab({ onTagsChanged }: { onTagsChanged?: () => Promise<void> | void }) {
   const LEGACY_FACE_MODEL_ID = 'legacy.faceapi.v1'
   const [imagePath, setImagePath] = useState<string | null>(null)
   const [imageSrc, setImageSrc] = useState<string | null>(null)
@@ -1425,7 +2734,7 @@ function FaceRecognitionTab() {
         await faceapi.tf.setBackend('cpu')
         await faceapi.tf.ready()
       }
-      const uri = '/face-models'
+      const uri = new URL('./face-models', window.location.href).toString()
       await faceapi.nets.ssdMobilenetv1.loadFromUri(uri)
       await faceapi.nets.faceLandmark68Net.loadFromUri(uri)
       await faceapi.nets.faceRecognitionNet.loadFromUri(uri)
@@ -1682,6 +2991,7 @@ function FaceRecognitionTab() {
         setImageError('התגית נשמרה, אך embedding לא נשמר כי ONNX לא זמין כרגע.')
       }
       await refreshKnownTagData()
+      await onTagsChanged?.()
 
       setFaceSavedByIndex((prev) => ({ ...prev, [faceIndex]: n }))
       setCandidateByIndex((prev) => ({ ...prev, [faceIndex]: null }))
@@ -1773,6 +3083,7 @@ function FaceRecognitionTab() {
       }
 
       await refreshKnownTagData()
+      await onTagsChanged?.()
       clearCurrentImage()
     } finally {
       setFaceSaving(false)

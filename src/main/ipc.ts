@@ -1,6 +1,8 @@
-import { BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
+import { spawn } from 'node:child_process'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions, type SaveDialogOptions, type WebContents } from 'electron'
 import type { App } from 'electron'
-import { readFileSync, writeFileSync } from 'node:fs'
 import { TagDatabase } from './database'
 import { indexFolderFiles } from './fileIndexer'
 import { loadSettings, saveSettings } from './settingsStore'
@@ -9,8 +11,13 @@ import type {
   FaceAddEmbeddingPayload,
   FaceDetectionWithCandidate,
   FaceReplaceEmbeddingPayload,
+  PackageAppForTransferOptions,
+  PackageAppForTransferResult,
   TagExportJson,
-  TagImportApplyPayload
+  TagImportApplyPayload,
+  TransferPackageProgress,
+  WatermarkExportPayload,
+  WatermarkPreviewPayload
 } from '../shared/types'
 import { checkGithubRelease } from './updates'
 import { normalizePath } from '../shared/pathUtils'
@@ -18,6 +25,7 @@ import { normalizeTagName } from '../shared/tagNormalize'
 import type { PathKind } from '../shared/types'
 import { analyzeImageWithOnnx } from './faceEngine'
 import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
+import { defaultWatermarkedFilePath, exportWatermarkedImage, renderWatermarkPreviewDataUrl } from './watermark'
 
 let indexAbort: AbortController | null = null
 
@@ -29,6 +37,332 @@ function mimeFromFilePath(filePath: string): string {
   if (p.endsWith('.gif')) return 'image/gif'
   if (p.endsWith('.bmp')) return 'image/bmp'
   return 'application/octet-stream'
+}
+
+function isExternalImageRef(value: string): boolean {
+  return /^https?:\/\//i.test(value) || /^file:\/\//i.test(value)
+}
+
+async function showOpenDialogForWindow(win: BrowserWindow | null, options: OpenDialogOptions) {
+  return win ? dialog.showOpenDialog(win, options) : dialog.showOpenDialog(options)
+}
+
+async function showSaveDialogForWindow(win: BrowserWindow | null, options: SaveDialogOptions) {
+  return win ? dialog.showSaveDialog(win, options) : dialog.showSaveDialog(options)
+}
+
+function emitTransferPackageProgress(
+  wc: WebContents | undefined,
+  payload: TransferPackageProgress
+): void {
+  wc?.send('transfer-package:progress', payload)
+}
+
+function resolveProjectRoot(app: App): string | null {
+  const candidates = [
+    process.cwd(),
+    app.getAppPath(),
+    resolve(app.getAppPath(), '..'),
+    resolve(app.getAppPath(), '..', '..'),
+    resolve(process.execPath, '..', '..'),
+    resolve(process.execPath, '..', '..', '..')
+  ]
+  for (const dir of [...new Set(candidates)]) {
+    if (existsSync(join(dir, 'package.json'))) return dir
+  }
+  return null
+}
+
+function validateTransferPackagingInputs(projectRoot: string): void {
+  const requiredFiles = [
+    { path: join(projectRoot, 'package.json'), label: 'package.json' },
+    { path: join(projectRoot, 'build', 'icon.png'), label: 'build/icon.png' },
+    { path: join(projectRoot, 'src', 'renderer', 'public', 'icon.png'), label: 'src/renderer/public/icon.png' },
+    { path: join(projectRoot, 'resources', 'models', 'face', 'scrfd.onnx'), label: 'resources/models/face/scrfd.onnx' },
+    { path: join(projectRoot, 'resources', 'models', 'face', 'arcface.onnx'), label: 'resources/models/face/arcface.onnx' }
+  ]
+  const missing = requiredFiles.filter((entry) => !existsSync(entry.path))
+  if (missing.length > 0) {
+    throw new Error(`חסרים קבצים לאריזה: ${missing.map((entry) => entry.label).join(', ')}`)
+  }
+
+  const legacyModelsDir = join(projectRoot, 'src', 'renderer', 'public', 'face-models')
+  const legacyModelFiles = existsSync(legacyModelsDir)
+    ? readdirSync(legacyModelsDir).filter((name) => !name.startsWith('.'))
+    : []
+  if (legacyModelFiles.length === 0) {
+    throw new Error('חסרים קבצי face-api בתיקיית src/renderer/public/face-models')
+  }
+}
+
+async function runNpmBuild(
+  projectRoot: string,
+  onProgress?: (payload: TransferPackageProgress) => void
+): Promise<void> {
+  const command =
+    process.platform === 'win32'
+      ? process.env['ComSpec'] || 'C:\\Windows\\System32\\cmd.exe'
+      : 'npm'
+  const args = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm run build'] : ['run', 'build']
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd: projectRoot,
+      env: process.env,
+      windowsHide: true
+    })
+    let stderr = ''
+    let lastDetail = ''
+    child.stdout.on('data', (chunk) => {
+      const text = String(chunk).trim()
+      if (!text) return
+      lastDetail = text
+      onProgress?.({
+        stage: 'building',
+        message: 'בונה את ההתקנה...',
+        detail: text
+      })
+    })
+    child.stderr.on('data', (chunk) => {
+      const text = String(chunk)
+      stderr += text
+      const trimmed = text.trim()
+      if (!trimmed) return
+      lastDetail = trimmed
+      onProgress?.({
+        stage: 'building',
+        message: 'בונה את ההתקנה...',
+        detail: trimmed
+      })
+    })
+    child.on('error', (error) => {
+      rejectPromise(new Error(`לא ניתן להריץ npm build: ${error.message}`))
+    })
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolvePromise()
+        return
+      }
+      const reason = stderr.trim()
+      rejectPromise(
+        new Error(reason ? `הבנייה נכשלה: ${reason}` : `הבנייה נכשלה עם קוד ${code ?? 'לא ידוע'}${lastDetail ? `\n${lastDetail}` : ''}`)
+      )
+    })
+  })
+}
+
+function findLatestInstaller(releaseDir: string): string | null {
+  if (!existsSync(releaseDir)) return null
+  const exeFiles = readdirSync(releaseDir)
+    .map((name) => join(releaseDir, name))
+    .filter((filePath) => filePath.toLowerCase().endsWith('.exe'))
+    .filter((filePath) => statSync(filePath).isFile())
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  return exeFiles[0] ?? null
+}
+
+function findLatestInstallerInDirectory(dirPath: string): string | null {
+  if (!existsSync(dirPath)) return null
+  const exeFiles = readdirSync(dirPath)
+    .map((name) => join(dirPath, name))
+    .filter((filePath) => filePath.toLowerCase().endsWith('.exe'))
+    .filter((filePath) => statSync(filePath).isFile())
+    .filter((filePath) => {
+      const lower = basename(filePath).toLowerCase()
+      if (lower.startsWith('uninstall')) return false
+      if (normalizePath(filePath).toLowerCase() === normalizePath(process.execPath).toLowerCase()) return false
+      return true
+    })
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  return exeFiles[0] ?? null
+}
+
+async function chooseExistingInstaller(win: BrowserWindow | null): Promise<string | null> {
+  const result = await showOpenDialogForWindow(win, {
+    title: 'בחר קובץ מתקין קיים',
+    properties: ['openFile'],
+    filters: [{ name: 'Windows Installer', extensions: ['exe'] }]
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return normalizePath(result.filePaths[0] as string)
+}
+
+function buildTransferInstructions(app: App, installerName: string, copiedFiles: string[], missingFiles: string[]): string {
+  const userDataDirName = basename(app.getPath('userData'))
+  const copiedLine = copiedFiles.length > 0 ? copiedFiles.join(', ') : 'לא נכללו קבצי נתונים.'
+  const missingLine = missingFiles.length > 0 ? missingFiles.join(', ') : 'אין'
+  const vcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+  return [
+    'חבילת העברה למחשב אחר',
+    '',
+    'מה יש כאן:',
+    `- installer\\${installerName}`,
+    `- user-data\\ (${copiedLine})`,
+    '',
+    'שלבי עבודה במחשב היעד:',
+    '1. הרץ את קובץ ההתקנה שבתיקיית installer.',
+    '2. פתח את התוכנה פעם אחת וסגור אותה.',
+    '3. היכנס להגדרות > העברה ולחץ על הכפתור לפתיחת תיקיית נתוני האפליקציה.',
+    `4. אם צריך ידנית, מיקום התיקייה הוא בדרך כלל: %APPDATA%\\${userDataDirName}`,
+    '5. העתק את הקבצים מתיקיית user-data אל תיקיית הנתונים שנפתחה.',
+    '6. אשר החלפה של קבצים אם תתבקש.',
+    '',
+    `קבצי userData שלא נמצאו בזמן האריזה: ${missingLine}`,
+    '',
+    'אם זיהוי הפנים לא עובד במחשב היעד, ודא שמותקן Microsoft Visual C++ Redistributable (x64).',
+    `הורדה ישירה: ${vcRedistUrl}`
+  ].join('\r\n')
+}
+
+async function packageAppForTransfer(
+  app: App,
+  db: TagDatabase,
+  win: BrowserWindow | null,
+  options: PackageAppForTransferOptions
+): Promise<PackageAppForTransferResult> {
+  const wc = win?.webContents
+  emitTransferPackageProgress(wc, {
+    stage: 'select-destination',
+    message: 'ממתין לבחירת תיקיית יעד...'
+  })
+  const destination = await showOpenDialogForWindow(win, {
+    title: 'בחר תיקייה ליצירת חבילת העברה',
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (destination.canceled || destination.filePaths.length === 0) {
+    return { ok: false, cancelled: true }
+  }
+
+  const projectRoot = resolveProjectRoot(app)
+
+  try {
+    emitTransferPackageProgress(wc, {
+      stage: 'persisting-data',
+      message: 'שומר את נתוני המשתמש לפני ההעתקה...'
+    })
+    db.persistNow()
+    let installerStrategy: 'existing' | 'rebuilt' = options.rebuildInstaller ? 'rebuilt' : 'existing'
+    let installerSourcePath: string | null = null
+
+    if (options.rebuildInstaller) {
+      if (!projectRoot) {
+        throw new Error('בניית מתקין חדש אפשרית רק מתוך סביבת הפרויקט. מתוך ההתקנה השתמש במתקין קיים.')
+      }
+      emitTransferPackageProgress(wc, {
+        stage: 'validating',
+        message: 'בודק שקיימים כל הקבצים הנדרשים לבניית מתקין חדש...'
+      })
+      validateTransferPackagingInputs(projectRoot)
+      emitTransferPackageProgress(wc, {
+        stage: 'building',
+        message: 'מריץ build מלא של ההתקנה...'
+      })
+      await runNpmBuild(projectRoot, (payload) => emitTransferPackageProgress(wc, payload))
+      installerSourcePath = findLatestInstaller(join(projectRoot, 'release'))
+    } else {
+      emitTransferPackageProgress(wc, {
+        stage: 'searching-installer',
+        message: 'מחפש מתקין קיים לשימוש מהיר...'
+      })
+      if (projectRoot) {
+        installerSourcePath = findLatestInstaller(join(projectRoot, 'release'))
+      }
+      installerSourcePath = installerSourcePath ?? findLatestInstallerInDirectory(dirname(process.execPath))
+      if (!installerSourcePath) {
+        emitTransferPackageProgress(wc, {
+          stage: 'searching-installer',
+          message: 'לא נמצא מתקין קיים אוטומטית. בחר קובץ מתקין קיים...'
+        })
+        installerSourcePath = await chooseExistingInstaller(win)
+      }
+      if (!installerSourcePath && projectRoot) {
+        installerStrategy = 'rebuilt'
+        emitTransferPackageProgress(wc, {
+          stage: 'validating',
+          message: 'לא נמצא מתקין קיים. בודק קבצים לבניית מתקין חדש...'
+        })
+        validateTransferPackagingInputs(projectRoot)
+        emitTransferPackageProgress(wc, {
+          stage: 'building',
+          message: 'לא נמצא מתקין קיים, בונה מתקין חדש...'
+        })
+        await runNpmBuild(projectRoot, (payload) => emitTransferPackageProgress(wc, payload))
+        installerSourcePath = findLatestInstaller(join(projectRoot, 'release'))
+      }
+    }
+
+    if (!installerSourcePath) {
+      return { ok: false, cancelled: true }
+    }
+
+    emitTransferPackageProgress(wc, {
+      stage: 'collecting-installer',
+      message: installerStrategy === 'existing' ? 'אוסף את קובץ ההתקנה הקיים...' : 'מאתר את קובץ ההתקנה שנוצר...'
+    })
+    if (!installerSourcePath) {
+      throw new Error('לא נמצא קובץ מתקין בתיקיית release לאחר הבנייה')
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+    const bundleDir = join(destination.filePaths[0] as string, `tags-manager-transfer-${timestamp}`)
+    const installerDir = join(bundleDir, 'installer')
+    const userDataBundleDir = join(bundleDir, 'user-data')
+    mkdirSync(installerDir, { recursive: true })
+    mkdirSync(userDataBundleDir, { recursive: true })
+
+    emitTransferPackageProgress(wc, {
+      stage: 'copying-data',
+      message: 'מעתיק את קובץ ההתקנה ואת נתוני המשתמש...'
+    })
+    const installerPath = join(installerDir, basename(installerSourcePath))
+    copyFileSync(installerSourcePath, installerPath)
+
+    const copiedUserDataFiles: string[] = []
+    const missingUserDataFiles: string[] = []
+    for (const name of ['tags-manager.sqlite', 'settings.json']) {
+      const sourcePath = join(app.getPath('userData'), name)
+      if (!existsSync(sourcePath)) {
+        missingUserDataFiles.push(name)
+        continue
+      }
+      copyFileSync(sourcePath, join(userDataBundleDir, name))
+      copiedUserDataFiles.push(name)
+    }
+
+    emitTransferPackageProgress(wc, {
+      stage: 'writing-instructions',
+      message: 'יוצר קובץ הוראות ומאמת את תוכן החבילה...'
+    })
+    const instructionsPath = join(bundleDir, 'README-transfer.txt')
+    writeFileSync(
+      instructionsPath,
+      buildTransferInstructions(app, basename(installerPath), copiedUserDataFiles, missingUserDataFiles),
+      'utf-8'
+    )
+
+    if (!existsSync(installerPath) || !existsSync(instructionsPath)) {
+      throw new Error('אימות החבילה נכשל: חסר קובץ מתקין או README')
+    }
+
+    return {
+      ok: true,
+      bundleDir,
+      installerPath,
+      instructionsPath,
+      copiedUserDataFiles,
+      missingUserDataFiles,
+      installerStrategy
+    }
+  } catch (error) {
+    emitTransferPackageProgress(wc, {
+      stage: 'error',
+      message: 'האריזה נכשלה',
+      detail: error instanceof Error ? error.message : String(error)
+    })
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    }
+  }
 }
 
 function parseImportJson(raw: string): TagExportJson {
@@ -260,7 +594,7 @@ export function registerIpcHandlers(
       const exportData = getDb().exportTagJsonByScope(normalizedScope)
       const win = getWindow()
       const suggestedBase = normalizedScope.replace(/[:\\\/]+/g, '_')
-      const saveRes = await dialog.showSaveDialog(win ?? undefined, {
+      const saveRes = await showSaveDialogForWindow(win, {
         title: 'ייצוא תגיות',
         defaultPath: `tags-export-${suggestedBase}.json`,
         filters: [{ name: 'JSON', extensions: ['json'] }]
@@ -275,7 +609,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('tags:import-preview', async (_e, scopePath: string) => {
     const win = getWindow()
-    const pickRes = await dialog.showOpenDialog(win ?? undefined, {
+    const pickRes = await showOpenDialogForWindow(win, {
       title: 'ייבוא תגיות',
       properties: ['openFile'],
       filters: [{ name: 'JSON', extensions: ['json'] }]
@@ -337,6 +671,12 @@ export function registerIpcHandlers(
     return { ok: true as const }
   })
 
+  ipcMain.handle('app:package-for-transfer', async (_e, options: PackageAppForTransferOptions) => {
+    return packageAppForTransfer(app, getDb(), getWindow(), {
+      rebuildInstaller: Boolean(options?.rebuildInstaller)
+    })
+  })
+
   ipcMain.handle('updates:check', async () => {
     const settings = loadSettings(app)
     const parts = settings.githubRepo.split('/').map((x) => x.trim())
@@ -350,6 +690,12 @@ export function registerIpcHandlers(
     return app.getVersion()
   })
 
+  ipcMain.handle('app:open-user-data-dir', async () => {
+    const userDataDir = app.getPath('userData')
+    await shell.openPath(userDataDir)
+    return userDataDir
+  })
+
   ipcMain.handle('shell:show-in-folder', async (_e, filePath: string) => {
     shell.showItemInFolder(normalizePath(filePath))
   })
@@ -360,7 +706,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('dialog:pick-files', async () => {
     const win = getWindow()
-    const r = await dialog.showOpenDialog(win ?? undefined, {
+    const r = await showOpenDialogForWindow(win, {
       title: 'בחר קבצים',
       properties: ['openFile', 'multiSelections']
     })
@@ -370,7 +716,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('dialog:pick-folders', async () => {
     const win = getWindow()
-    const r = await dialog.showOpenDialog(win ?? undefined, {
+    const r = await showOpenDialogForWindow(win, {
       title: 'בחר תיקיות',
       properties: ['openDirectory', 'multiSelections']
     })
@@ -380,7 +726,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('dialog:pick-folder', async () => {
     const win = getWindow()
-    const r = await dialog.showOpenDialog(win ?? undefined, {
+    const r = await showOpenDialogForWindow(win, {
       title: 'בחר תיקייה לחיפוש',
       properties: ['openDirectory']
     })
@@ -390,7 +736,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('dialog:pick-image', async () => {
     const win = getWindow()
-    const r = await dialog.showOpenDialog(win ?? undefined, {
+    const r = await showOpenDialogForWindow(win, {
       title: 'בחר תמונה',
       properties: ['openFile'],
       filters: [
@@ -409,6 +755,45 @@ export function registerIpcHandlers(
       return `data:${mime};base64,${bytes.toString('base64')}`
     } catch {
       return null
+    }
+  })
+
+  ipcMain.handle('images:render-watermark-preview', async (_e, payload: WatermarkPreviewPayload) => {
+    try {
+      return await renderWatermarkPreviewDataUrl({
+        ...payload,
+        baseImagePath: normalizePath(payload.baseImagePath)
+      })
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('images:export-watermarked', async (_e, payload: WatermarkExportPayload) => {
+    const win = getWindow()
+    try {
+      const baseImagePath = normalizePath(payload.baseImagePath)
+      const saveRes = await showSaveDialogForWindow(win, {
+        title: 'ייצוא תמונה עם סימן מים',
+        defaultPath: defaultWatermarkedFilePath(baseImagePath),
+        filters: [
+          { name: 'PNG', extensions: ['png'] },
+          { name: 'JPEG', extensions: ['jpg', 'jpeg'] },
+          { name: 'BMP', extensions: ['bmp'] }
+        ]
+      })
+      if (saveRes.canceled || !saveRes.filePath) return { ok: false as const, cancelled: true as const }
+      await exportWatermarkedImage({
+        ...payload,
+        baseImagePath,
+        watermarkImagePath: isExternalImageRef(payload.watermarkImagePath)
+          ? payload.watermarkImagePath
+          : normalizePath(payload.watermarkImagePath),
+        outputPath: normalizePath(saveRes.filePath)
+      })
+      return { ok: true as const, filePath: saveRes.filePath }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
     }
   })
 }

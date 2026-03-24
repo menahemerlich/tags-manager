@@ -7,8 +7,8 @@
   "scripts": {
     "postinstall": "node scripts/download-onnx-face-models.mjs && node scripts/download-face-models.mjs",
     "dev": "electron-vite dev",
-    "build": "electron-vite build && electron-builder",
-    "build:vite": "electron-vite build",
+    "build": "electron-vite build && node scripts/copy-renderer-public.mjs && electron-builder",
+    "build:vite": "electron-vite build && node scripts/copy-renderer-public.mjs",
     "preview": "electron-vite preview",
     "test": "vitest run"
   },

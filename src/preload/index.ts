@@ -8,6 +8,7 @@ import type {
   TagRow,
   TagFolderRow,
   ImportProgress,
+  TransferPackageProgress,
   FaceAddEmbeddingPayload,
   FaceDetection,
   FacePersonEmbeddings,
@@ -15,7 +16,12 @@ import type {
   FaceAnalyzeAndMatchResponse,
   FaceAnalyzeAndMatchErrorResponse,
   FaceEmbeddingMetaRow,
-  FaceReplaceEmbeddingPayload
+  FaceReplaceEmbeddingPayload,
+  PackageAppForTransferOptions,
+  PackageAppForTransferResult,
+  WatermarkExportPayload,
+  WatermarkPreviewPayload,
+  WatermarkExportResult
 } from '../shared/types'
 
 const api = {
@@ -49,6 +55,8 @@ const api = {
     ipcRenderer.invoke('search:query', tagNames) as Promise<SearchResult>,
   getSettings: () => ipcRenderer.invoke('settings:get') as Promise<AppSettings>,
   setSettings: (s: AppSettings) => ipcRenderer.invoke('settings:set', s) as Promise<{ ok: true }>,
+  packageAppForTransfer: (options: PackageAppForTransferOptions) =>
+    ipcRenderer.invoke('app:package-for-transfer', options) as Promise<PackageAppForTransferResult>,
   checkUpdates: () => ipcRenderer.invoke('updates:check') as Promise<UpdateCheckResult>,
   exportTagsJson: (scopePath: string) =>
     ipcRenderer.invoke('tags:export-json', scopePath) as Promise<
@@ -83,6 +91,7 @@ const api = {
       { ok: true } | { ok: false; error: string }
     >,
   getAppVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
+  openAppUserDataDir: () => ipcRenderer.invoke('app:open-user-data-dir') as Promise<string>,
   onIndexProgress: (cb: (p: { done: number; total: number; currentPath: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { done: number; total: number; currentPath: string }) =>
       cb(payload)
@@ -94,11 +103,20 @@ const api = {
     ipcRenderer.on('import:progress', handler)
     return () => ipcRenderer.removeListener('import:progress', handler)
   },
+  onTransferPackageProgress: (cb: (p: TransferPackageProgress) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: TransferPackageProgress) => cb(payload)
+    ipcRenderer.on('transfer-package:progress', handler)
+    return () => ipcRenderer.removeListener('transfer-package:progress', handler)
+  },
   pickFiles: () => ipcRenderer.invoke('dialog:pick-files') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => ipcRenderer.invoke('dialog:pick-folders') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => ipcRenderer.invoke('dialog:pick-folder') as Promise<string | null>,
   pickImage: () => ipcRenderer.invoke('dialog:pick-image') as Promise<string | null>,
   getImageDataUrl: (filePath: string) => ipcRenderer.invoke('files:image-data-url', filePath) as Promise<string | null>,
+  renderWatermarkPreview: (payload: WatermarkPreviewPayload) =>
+    ipcRenderer.invoke('images:render-watermark-preview', payload) as Promise<string | null>,
+  exportWatermarkedImage: (payload: WatermarkExportPayload) =>
+    ipcRenderer.invoke('images:export-watermarked', payload) as Promise<WatermarkExportResult>,
   showInFolder: (filePath: string) => ipcRenderer.invoke('shell:show-in-folder', filePath) as Promise<void>,
   openPath: (filePath: string) => ipcRenderer.invoke('shell:open-path', filePath) as Promise<string>
 }

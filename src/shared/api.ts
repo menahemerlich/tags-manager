@@ -2,6 +2,7 @@ import type {
   AppSettings,
   ImportProgress,
   PathKind,
+  TransferPackageProgress,
   SearchResult,
   TagImportApplyPayload,
   TagImportPreview,
@@ -14,7 +15,12 @@ import type {
   FaceAnalyzeAndMatchResponse,
   FaceAnalyzeAndMatchErrorResponse,
   FaceEmbeddingMetaRow,
-  FaceReplaceEmbeddingPayload
+  FaceReplaceEmbeddingPayload,
+  PackageAppForTransferOptions,
+  PackageAppForTransferResult,
+  WatermarkExportPayload,
+  WatermarkPreviewPayload,
+  WatermarkExportResult
 } from './types'
 
 /** Shape of `window.api` exposed from preload (for renderer typing). */
@@ -40,6 +46,7 @@ export interface ElectronApi {
   search: (tagNames: string[]) => Promise<SearchResult>
   getSettings: () => Promise<AppSettings>
   setSettings: (s: AppSettings) => Promise<{ ok: true }>
+  packageAppForTransfer: (options: PackageAppForTransferOptions) => Promise<PackageAppForTransferResult>
   checkUpdates: () => Promise<UpdateCheckResult>
   exportTagsJson: (scopePath: string) => Promise<{ ok: true; filePath: string; exportedCount: number } | { ok: false; cancelled?: true; error?: string }>
   importTagsPreview: (scopePath: string) => Promise<{ ok: true; preview: TagImportPreview } | { ok: false; cancelled?: true; error?: string }>
@@ -53,15 +60,19 @@ export interface ElectronApi {
   listFaceEmbeddingsMeta: () => Promise<FaceEmbeddingMetaRow[]>
   replaceFaceEmbedding: (payload: FaceReplaceEmbeddingPayload) => Promise<{ ok: true } | { ok: false; error: string }>
   getAppVersion: () => Promise<string>
+  openAppUserDataDir: () => Promise<string>
   onIndexProgress: (
     cb: (p: { done: number; total: number; currentPath: string }) => void
   ) => () => void
   onImportProgress: (cb: (p: ImportProgress) => void) => () => void
+  onTransferPackageProgress: (cb: (p: TransferPackageProgress) => void) => () => void
   pickFiles: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => Promise<string | null>,
   pickImage: () => Promise<string | null>,
   getImageDataUrl: (filePath: string) => Promise<string | null>,
+  renderWatermarkPreview: (payload: WatermarkPreviewPayload) => Promise<string | null>,
+  exportWatermarkedImage: (payload: WatermarkExportPayload) => Promise<WatermarkExportResult>,
   showInFolder: (filePath: string) => Promise<void>
   openPath: (filePath: string) => Promise<string>
 }

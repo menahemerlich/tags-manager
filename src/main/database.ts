@@ -181,6 +181,14 @@ export class TagDatabase {
     writeFileSync(this.filePath, Buffer.from(data))
   }
 
+  persistNow(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer)
+      this.persistTimer = null
+    }
+    this.flush()
+  }
+
   close(): void {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer)
@@ -1095,7 +1103,7 @@ export class TagDatabase {
     data: TagExportJson,
     payload: TagImportApplyPayload,
     opts?: { onProgress?: (p: { done: number; total: number }) => void }
-  ): { appliedCount: number; skippedCount: number } {
+  ): Promise<{ appliedCount: number; skippedCount: number }> {
     const normalizedScope = normalizePath(payload.scopePath)
     const conflictChoiceMap = new Map(
       Object.entries(payload.conflictChoicesByPath ?? {}).map(([k, v]) => [normalizePath(k), v])

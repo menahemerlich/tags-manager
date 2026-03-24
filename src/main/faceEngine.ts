@@ -63,9 +63,19 @@ async function loadOrtRuntime(): Promise<OrtRuntime> {
 }
 
 function candidateModelDirs(): string[] {
-  const dirs = [path.resolve('resources', 'models', 'face'), path.resolve(process.cwd(), 'resources', 'models', 'face')]
-  if (process.resourcesPath) dirs.push(path.resolve(process.resourcesPath, 'models', 'face'))
-  return dirs
+  const dirs = [
+    path.resolve('resources', 'models', 'face'),
+    path.resolve(process.cwd(), 'resources', 'models', 'face')
+  ]
+  if (process.resourcesPath) {
+    dirs.push(
+      path.resolve(process.resourcesPath, 'models', 'face'),
+      path.resolve(process.resourcesPath, 'resources', 'models', 'face'),
+      path.resolve(process.resourcesPath, 'app.asar.unpacked', 'resources', 'models', 'face'),
+      path.resolve(path.dirname(process.execPath), 'resources', 'models', 'face')
+    )
+  }
+  return [...new Set(dirs)]
 }
 
 function resolveModelsDir(): string | null {

@@ -2,6 +2,43 @@ export interface AppSettings {
   githubRepo: string
 }
 
+export interface TransferPackageProgress {
+  stage:
+    | 'idle'
+    | 'select-destination'
+    | 'validating'
+    | 'persisting-data'
+    | 'searching-installer'
+    | 'building'
+    | 'collecting-installer'
+    | 'copying-data'
+    | 'writing-instructions'
+    | 'done'
+    | 'error'
+  message: string
+  detail?: string
+}
+
+export interface PackageAppForTransferOptions {
+  rebuildInstaller: boolean
+}
+
+export type PackageAppForTransferResult =
+  | {
+      ok: true
+      bundleDir: string
+      installerPath: string
+      instructionsPath: string
+      copiedUserDataFiles: string[]
+      missingUserDataFiles: string[]
+      installerStrategy: 'existing' | 'rebuilt'
+    }
+  | {
+      ok: false
+      cancelled?: true
+      error?: string
+    }
+
 export type PathKind = 'file' | 'folder'
 
 export interface TagRow {
@@ -162,3 +199,41 @@ export interface FacePersonProfile {
   sampleCount: number
   lastUpdated: string
 }
+
+export interface WatermarkExportPayload {
+  baseImagePath: string
+  watermarkImagePath: string
+  previewBaseImageDataUrl?: string
+  blurPreviewScale?: number
+  x: number
+  y: number
+  width: number
+  height: number
+  opacity: number
+  toolMode?: 'none' | 'crop' | 'blur'
+  selectionShape?: 'rect' | 'circle'
+  selectionX?: number
+  selectionY?: number
+  selectionWidth?: number
+  selectionHeight?: number
+  blurStrength?: number
+  blurFeather?: number
+  focusSeparation?: number
+}
+
+export interface WatermarkPreviewPayload {
+  baseImagePath: string
+  toolMode?: 'none' | 'crop' | 'blur'
+  selectionShape?: 'rect' | 'circle'
+  selectionX?: number
+  selectionY?: number
+  selectionWidth?: number
+  selectionHeight?: number
+  blurStrength?: number
+  blurFeather?: number
+  focusSeparation?: number
+}
+
+export type WatermarkExportResult =
+  | { ok: true; filePath: string }
+  | { ok: false; cancelled?: true; error?: string }
