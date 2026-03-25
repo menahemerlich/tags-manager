@@ -89,12 +89,15 @@ function isWatermarkVideoPath(filePath: string): boolean {
 
 function formatWatermarkTimeSec(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00'
-  const m = Math.floor(sec / 60)
-  const s = sec - m * 60
-  const wholeS = Math.floor(s)
-  const frac = Math.round((s - wholeS) * 10)
-  if (frac <= 0) return `${m}:${String(wholeS).padStart(2, '0')}`
-  return `${m}:${String(wholeS).padStart(2, '0')}.${frac}`
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const sRem = sec % 60
+  const wholeS = Math.floor(sRem)
+  const frac = Math.round((sRem - wholeS) * 10)
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const core = h > 0 ? `${h}:${pad2(m)}:${pad2(wholeS)}` : `${m}:${pad2(wholeS)}`
+  if (frac <= 0) return core
+  return `${core}.${frac}`
 }
 
 const CLIP_HANDLE_MIN_GAP_SEC = 0.15
