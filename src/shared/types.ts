@@ -1,5 +1,22 @@
 export interface AppSettings {
   githubRepo: string
+  sync?: SyncSettings
+}
+
+export interface SyncSettings {
+  /** Supabase project URL (no trailing slash). */
+  supabaseUrl?: string
+  /** Supabase anon (or service) key — never commit real keys. */
+  supabaseAnonKey?: string
+  lastSupabasePushAt?: string
+  /**
+   * Resume markers for push per-table.
+   * If a push fails mid-run, we can avoid re-pushing tables that already completed.
+   */
+  lastSupabasePushAtByTable?: Record<string, string>
+  lastSupabasePullAt?: string
+  /** Stable id for this install (conflict metadata / logs). */
+  syncDeviceId?: string
 }
 
 export interface TransferPackageProgress {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -24,6 +25,8 @@ import type {
   FaceReplaceEmbeddingPayload
 } from '../shared/types'
 import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
+import { migrateSyncSchema } from './schema/syncMigration'
+import { SqliteSyncBridge } from './services/sync/sqliteSyncBridge'
 
 const SEARCH_RESULT_LIMIT = 5000
 
@@ -189,6 +192,27 @@ export class TagDatabase {
     this.flush()
   }
 
+  /**
+   * Call after tags-manager.sqlite was replaced on disk (e.g. sync pull). Reloads sql.js state
+   * without flushing stale in-memory data onto the new file.
+   */
+  async reloadFromDisk(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer)
+      this.persistTimer = null
+    }
+    this.db.close()
+    const SQL = await getSqlMod()
+    if (existsSync(this.filePath)) {
+      const buf = readFileSync(this.filePath)
+      this.db = new SQL.Database(buf)
+    } else {
+      this.db = new SQL.Database()
+    }
+    this.db.run('PRAGMA foreign_keys = ON')
+    this.initSchema()
+  }
+
   close(): void {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer)
@@ -196,6 +220,27 @@ export class TagDatabase {
     }
     this.flush()
     this.db.close()
+  }
+
+  private refreshPathTagUuids(pathId: number, tagId: number): void {
+    this.db.run(
+      `UPDATE path_tags SET path_uuid = (SELECT uuid FROM paths WHERE id = ?), tag_uuid = (SELECT uuid FROM tags WHERE id = ?) WHERE path_id = ? AND tag_id = ?`,
+      [pathId, tagId, pathId, tagId]
+    )
+  }
+
+  private refreshPathExclusionUuids(pathId: number, tagId: number): void {
+    this.db.run(
+      `UPDATE path_tag_exclusions SET path_uuid = (SELECT uuid FROM paths WHERE id = ?), tag_uuid = (SELECT uuid FROM tags WHERE id = ?) WHERE path_id = ? AND tag_id = ?`,
+      [pathId, tagId, pathId, tagId]
+    )
+  }
+
+  private refreshTagFolderLinkUuids(folderId: number, tagId: number): void {
+    this.db.run(
+      `UPDATE tag_folder_tags SET folder_uuid = (SELECT uuid FROM tag_folders WHERE id = ?), tag_uuid = (SELECT uuid FROM tags WHERE id = ?) WHERE folder_id = ? AND tag_id = ?`,
+      [folderId, tagId, folderId, tagId]
+    )
   }
 
   private initSchema(): void {
@@ -275,6 +320,7 @@ export class TagDatabase {
       CREATE INDEX IF NOT EXISTS idx_face_embeddings_person ON face_embeddings(person_id);
     `)
     this.ensureFaceEmbeddingSchema()
+    migrateSyncSchema(this.db)
     this.schedulePersist()
   }
 
@@ -296,7 +342,7 @@ export class TagDatabase {
 
   upsertPath(absPath: string, kind: PathKind): number {
     const p = normalizePath(absPath)
-    const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ?')
+    const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ? AND deleted_at IS NULL')
     stmt.bind([p])
     let id: number | undefined
     if (stmt.step()) {
@@ -310,8 +356,8 @@ export class TagDatabase {
       return id
     }
     this.db.run(
-      'INSERT INTO paths (path, kind, updated_at) VALUES (?, ?, datetime(\'now\'))',
-      [p, kind]
+      'INSERT INTO paths (path, kind, updated_at, created_at, uuid) VALUES (?, ?, datetime(\'now\'), datetime(\'now\'), ?)',
+      [p, kind, randomUUID()]
     )
     const newId = lastInsertRowid(this.db)
     this.schedulePersist()
@@ -320,7 +366,7 @@ export class TagDatabase {
 
   getPathId(absPath: string): number | undefined {
     const p = normalizePath(absPath)
-    const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ?')
+    const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ? AND deleted_at IS NULL')
     stmt.bind([p])
     let id: number | undefined
     if (stmt.step()) {
@@ -332,7 +378,7 @@ export class TagDatabase {
 
   getPathKind(absPath: string): PathKind | undefined {
     const p = normalizePath(absPath)
-    const stmt = this.db.prepare('SELECT kind FROM paths WHERE path = ?')
+    const stmt = this.db.prepare('SELECT kind FROM paths WHERE path = ? AND deleted_at IS NULL')
     stmt.bind([p])
     let k: PathKind | undefined
     if (stmt.step()) {
@@ -344,14 +390,28 @@ export class TagDatabase {
 
   deletePath(absPath: string): void {
     const p = normalizePath(absPath)
-    this.db.run('DELETE FROM paths WHERE path = ?', [p])
+    const stmt = this.db.prepare('SELECT id, uuid FROM paths WHERE path = ? AND deleted_at IS NULL')
+    stmt.bind([p])
+    if (!stmt.step()) {
+      stmt.free()
+      return
+    }
+    const row = stmt.get()
+    const pid = row[0] as number
+    const u = String(row[1] ?? randomUUID())
+    stmt.free()
+    const tombstone = `${p}::__deleted__${u.slice(0, 8)}`
+    this.db.run(
+      `UPDATE paths SET path = ?, deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      [tombstone, pid]
+    )
     this.schedulePersist()
   }
 
   getOrCreateTag(name: string): { id: number; name: string } {
     const n = normalizeTagName(name)
     if (!n) throw new Error('Empty tag name')
-    const sel = this.db.prepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE')
+    const sel = this.db.prepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL')
     sel.bind([n])
     if (sel.step()) {
       const row = sel.get()
@@ -359,7 +419,10 @@ export class TagDatabase {
       return { id: row[0] as number, name: row[1] as string }
     }
     sel.free()
-    this.db.run('INSERT INTO tags (name) VALUES (?)', [n])
+    this.db.run(
+      `INSERT INTO tags (name, created_at, updated_at, uuid) VALUES (?, datetime('now'), datetime('now'), ?)`,
+      [n, randomUUID()]
+    )
     const id = lastInsertRowid(this.db)
     this.schedulePersist()
     return { id, name: n }
@@ -368,7 +431,7 @@ export class TagDatabase {
   private getOrCreateFacePerson(name: string): { id: number; name: string } {
     const n = normalizeTagName(name)
     if (!n) throw new Error('Empty person name')
-    const sel = this.db.prepare('SELECT id, name FROM face_people WHERE name = ? COLLATE NOCASE')
+    const sel = this.db.prepare('SELECT id, name FROM face_people WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL')
     sel.bind([n])
     if (sel.step()) {
       const row = sel.get()
@@ -376,7 +439,10 @@ export class TagDatabase {
       return { id: row[0] as number, name: row[1] as string }
     }
     sel.free()
-    this.db.run('INSERT INTO face_people (name) VALUES (?)', [n])
+    this.db.run(
+      `INSERT INTO face_people (name, created_at, updated_at, uuid) VALUES (?, datetime('now'), datetime('now'), ?)`,
+      [n, randomUUID()]
+    )
     const id = lastInsertRowid(this.db)
     this.schedulePersist()
     return { id, name: n }
@@ -386,7 +452,7 @@ export class TagDatabase {
     const stmt = this.db.prepare(
       `SELECT embedding_json, embedding_dim, model_id
        FROM face_embeddings
-       WHERE person_id = ?
+       WHERE person_id = ? AND deleted_at IS NULL
        ORDER BY id`
     )
     stmt.bind([personId])
@@ -416,7 +482,10 @@ export class TagDatabase {
   private recomputePersonProfile(personId: number, modelId: string, expectedDim?: number): void {
     const embeddings = this.listPersonEmbeddingsForModel(personId, modelId, expectedDim)
     if (embeddings.length === 0) {
-      this.db.run('DELETE FROM person_profiles WHERE person_id = ?', [personId])
+      this.db.run(
+        `UPDATE person_profiles SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE person_id = ? AND deleted_at IS NULL`,
+        [personId]
+      )
       return
     }
 
@@ -450,15 +519,24 @@ export class TagDatabase {
     }
     const medoidVec = new Float32Array(medoid)
 
+    const pu = this.db.prepare('SELECT uuid FROM face_people WHERE id = ?')
+    pu.bind([personId])
+    let personUuid = ''
+    if (pu.step()) personUuid = String(pu.get()[0] ?? '')
+    pu.free()
+
     this.db.run(
-      `INSERT INTO person_profiles (person_id, medoid, trimmed_mean, sample_count, last_updated)
-       VALUES (?, ?, ?, ?, datetime('now'))
+      `INSERT INTO person_profiles (person_id, medoid, trimmed_mean, sample_count, last_updated, uuid, created_at, updated_at, deleted_at, person_uuid)
+       VALUES (?, ?, ?, ?, datetime('now'), ?, datetime('now'), datetime('now'), NULL, ?)
        ON CONFLICT(person_id) DO UPDATE SET
          medoid = excluded.medoid,
          trimmed_mean = excluded.trimmed_mean,
          sample_count = excluded.sample_count,
-         last_updated = excluded.last_updated`,
-      [personId, toFloat32Blob(medoidVec), toFloat32Blob(trimmedMean), embeddings.length]
+         last_updated = excluded.last_updated,
+         updated_at = datetime('now'),
+         deleted_at = NULL,
+         person_uuid = excluded.person_uuid`,
+      [personId, toFloat32Blob(medoidVec), toFloat32Blob(trimmedMean), embeddings.length, randomUUID(), personUuid || null]
     )
   }
 
@@ -471,12 +549,15 @@ export class TagDatabase {
     if (!modelId) throw new Error('Missing modelId')
     const person = this.getOrCreateFacePerson(n)
     const descriptorJson = JSON.stringify(descriptor)
-    this.db.run('INSERT INTO face_embeddings (person_id, embedding_json, model_id, embedding_dim) VALUES (?, ?, ?, ?)', [
-      person.id,
-      descriptorJson,
-      modelId,
-      descriptor.length
-    ])
+    const pu = this.db.prepare('SELECT uuid FROM face_people WHERE id = ?')
+    pu.bind([person.id])
+    let personUuid = ''
+    if (pu.step()) personUuid = String(pu.get()[0] ?? '')
+    pu.free()
+    this.db.run(
+      'INSERT INTO face_embeddings (person_id, embedding_json, model_id, embedding_dim, created_at, updated_at, uuid, person_uuid) VALUES (?, ?, ?, ?, datetime(\'now\'), datetime(\'now\'), ?, ?)',
+      [person.id, descriptorJson, modelId, descriptor.length, randomUUID(), personUuid || null]
+    )
     this.recomputePersonProfile(person.id, modelId, descriptor.length)
     this.schedulePersist()
   }
@@ -485,7 +566,8 @@ export class TagDatabase {
     const stmt = this.db.prepare(
       `SELECT p.id, p.name, e.embedding_json
        FROM face_people p
-       JOIN face_embeddings e ON e.person_id = p.id
+       JOIN face_embeddings e ON e.person_id = p.id AND e.deleted_at IS NULL
+       WHERE p.deleted_at IS NULL
        ORDER BY p.name COLLATE NOCASE, e.id`
     )
     const outMap = new Map<number, FacePersonEmbeddings>()
@@ -525,7 +607,8 @@ export class TagDatabase {
 
     const profilesStmt = this.db.prepare(
       `SELECT person_id, medoid, trimmed_mean, sample_count, last_updated
-       FROM person_profiles`
+       FROM person_profiles
+       WHERE deleted_at IS NULL`
     )
     const profilesByPerson = new Map<number, { medoid: Float32Array; trimmedMean: Float32Array; sampleCount: number }>()
     while (profilesStmt.step()) {
@@ -543,7 +626,8 @@ export class TagDatabase {
     const stmt = this.db.prepare(
       `SELECT p.id, p.name, e.embedding_json, e.model_id, e.embedding_dim
        FROM face_people p
-       JOIN face_embeddings e ON e.person_id = p.id
+       JOIN face_embeddings e ON e.person_id = p.id AND e.deleted_at IS NULL
+       WHERE p.deleted_at IS NULL
        ORDER BY p.name COLLATE NOCASE, e.id`
     )
 
@@ -621,7 +705,8 @@ export class TagDatabase {
     const stmt = this.db.prepare(
       `SELECT e.id, p.id, p.name, e.model_id, e.embedding_dim, e.embedding_json, e.created_at
        FROM face_embeddings e
-       JOIN face_people p ON p.id = e.person_id
+       JOIN face_people p ON p.id = e.person_id AND p.deleted_at IS NULL
+       WHERE e.deleted_at IS NULL
        ORDER BY e.id`
     )
     const rows: FaceEmbeddingMetaRow[] = []
@@ -656,23 +741,23 @@ export class TagDatabase {
     if (descriptor.length === 0) throw new Error('Empty descriptor')
     const modelId = normalizeTagName(payload.modelId)
     if (!modelId) throw new Error('Missing modelId')
-    const personStmt = this.db.prepare('SELECT person_id FROM face_embeddings WHERE id = ?')
+    const personStmt = this.db.prepare('SELECT person_id FROM face_embeddings WHERE id = ? AND deleted_at IS NULL')
     personStmt.bind([embeddingId])
     const personId = personStmt.step() ? Number(personStmt.get()[0]) : null
     personStmt.free()
     if (!personId) throw new Error('Embedding not found')
-    this.db.run('UPDATE face_embeddings SET embedding_json = ?, model_id = ?, embedding_dim = ? WHERE id = ?', [
-      JSON.stringify(descriptor),
-      modelId,
-      descriptor.length,
-      embeddingId
-    ])
+    this.db.run(
+      'UPDATE face_embeddings SET embedding_json = ?, model_id = ?, embedding_dim = ?, updated_at = datetime(\'now\') WHERE id = ?',
+      [JSON.stringify(descriptor), modelId, descriptor.length, embeddingId]
+    )
     this.recomputePersonProfile(personId, modelId, descriptor.length)
     this.schedulePersist()
   }
 
   listTags(): TagRow[] {
-    const stmt = this.db.prepare('SELECT id, name, created_at FROM tags ORDER BY name COLLATE NOCASE')
+    const stmt = this.db.prepare(
+      'SELECT id, name, created_at FROM tags WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE'
+    )
     const out: TagRow[] = []
     while (stmt.step()) {
       const r = stmt.get()
@@ -683,7 +768,9 @@ export class TagDatabase {
   }
 
   listTagFolders(): TagFolderRow[] {
-    const folderStmt = this.db.prepare('SELECT id, name, created_at FROM tag_folders ORDER BY name COLLATE NOCASE')
+    const folderStmt = this.db.prepare(
+      'SELECT id, name, created_at FROM tag_folders WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE'
+    )
     const folders = new Map<number, TagFolderRow>()
     while (folderStmt.step()) {
       const r = folderStmt.get()
@@ -694,7 +781,9 @@ export class TagDatabase {
 
     if (folders.size === 0) return []
 
-    const linkStmt = this.db.prepare('SELECT folder_id, tag_id FROM tag_folder_tags')
+    const linkStmt = this.db.prepare(
+      'SELECT folder_id, tag_id FROM tag_folder_tags WHERE deleted_at IS NULL'
+    )
     while (linkStmt.step()) {
       const r = linkStmt.get()
       const folderId = Number(r[0])
@@ -711,25 +800,76 @@ export class TagDatabase {
   createTagFolder(name: string): number {
     const n = normalizeTagName(name)
     if (!n) throw new Error('Empty folder name')
-    this.db.run('INSERT INTO tag_folders (name) VALUES (?)', [n])
+    this.db.run(
+      `INSERT INTO tag_folders (name, created_at, updated_at, uuid) VALUES (?, datetime('now'), datetime('now'), ?)`,
+      [n, randomUUID()]
+    )
     const id = lastInsertRowid(this.db)
     this.schedulePersist()
     return id
   }
 
   deleteTagFolder(folderId: number): void {
-    this.db.run('DELETE FROM tag_folders WHERE id = ?', [folderId])
+    const st = this.db.prepare('SELECT id, name, uuid FROM tag_folders WHERE id = ? AND deleted_at IS NULL')
+    st.bind([folderId])
+    if (!st.step()) {
+      st.free()
+      return
+    }
+    const r = st.get()
+    st.free()
+    const u = String(r[2] ?? randomUUID())
+    const tomb = `${String(r[1])}::__del__${u.slice(0, 8)}`
+    this.db.run(
+      `UPDATE tag_folders SET name = ?, deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      [tomb, folderId]
+    )
+    this.db.run(
+      `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE folder_id = ? AND deleted_at IS NULL`,
+      [folderId]
+    )
     this.schedulePersist()
   }
 
   setTagFolderForTag(tagId: number, folderId: number | null): void {
     const tid = Number(tagId)
     if (!Number.isFinite(tid) || tid <= 0) throw new Error('Invalid tag id')
-    this.db.run('DELETE FROM tag_folder_tags WHERE tag_id = ?', [tid])
+    this.db.run(
+      `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
+      [tid]
+    )
     if (folderId !== null) {
       const fid = Number(folderId)
       if (!Number.isFinite(fid) || fid <= 0) throw new Error('Invalid folder id')
-      this.db.run('INSERT INTO tag_folder_tags (folder_id, tag_id) VALUES (?, ?)', [fid, tid])
+      const ex = this.db.prepare(
+        'SELECT 1 FROM tag_folder_tags WHERE folder_id = ? AND tag_id = ? AND deleted_at IS NULL'
+      )
+      ex.bind([fid, tid])
+      const exists = ex.step()
+      ex.free()
+      if (exists) {
+        this.schedulePersist()
+        return
+      }
+      const dead = this.db.prepare(
+        'SELECT 1 FROM tag_folder_tags WHERE folder_id = ? AND tag_id = ? AND deleted_at IS NOT NULL'
+      )
+      dead.bind([fid, tid])
+      if (dead.step()) {
+        dead.free()
+        this.db.run(
+          `UPDATE tag_folder_tags SET deleted_at = NULL, updated_at = datetime('now') WHERE folder_id = ? AND tag_id = ?`,
+          [fid, tid]
+        )
+        this.refreshTagFolderLinkUuids(fid, tid)
+      } else {
+        dead.free()
+        this.db.run(
+          `INSERT INTO tag_folder_tags (folder_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
+          [fid, tid, randomUUID()]
+        )
+      }
+      this.refreshTagFolderLinkUuids(fid, tid)
     }
     this.schedulePersist()
   }
@@ -737,67 +877,169 @@ export class TagDatabase {
   renameTag(tagId: number, newName: string): void {
     const n = normalizeTagName(newName)
     if (!n) throw new Error('Empty tag name')
-    this.db.run('UPDATE tags SET name = ? WHERE id = ?', [n, tagId])
+    this.db.run(`UPDATE tags SET name = ?, updated_at = datetime('now') WHERE id = ?`, [n, tagId])
     this.schedulePersist()
   }
 
   deleteTag(tagId: number): void {
-    this.db.run('DELETE FROM tags WHERE id = ?', [tagId])
+    this.db.run(
+      `UPDATE path_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
+      [tagId]
+    )
+    this.db.run(
+      `UPDATE path_tag_exclusions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
+      [tagId]
+    )
+    this.db.run(
+      `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
+      [tagId]
+    )
+    const st = this.db.prepare('SELECT name, uuid FROM tags WHERE id = ? AND deleted_at IS NULL')
+    st.bind([tagId])
+    if (!st.step()) {
+      st.free()
+      return
+    }
+    const row = st.get()
+    st.free()
+    const u = String(row[1] ?? randomUUID())
+    const tomb = `${String(row[0])}::__del__${u.slice(0, 8)}`
+    this.db.run(
+      `UPDATE tags SET name = ?, deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      [tomb, tagId]
+    )
     this.schedulePersist()
   }
 
   addTagToPath(pathId: number, tagId: number): void {
-    this.db.run('DELETE FROM path_tag_exclusions WHERE path_id = ? AND tag_id = ?', [pathId, tagId])
-    this.db.run('INSERT OR IGNORE INTO path_tags (path_id, tag_id) VALUES (?, ?)', [pathId, tagId])
+    this.db.run(
+      `UPDATE path_tag_exclusions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND tag_id = ? AND deleted_at IS NULL`,
+      [pathId, tagId]
+    )
+    const chk = this.db.prepare(
+      'SELECT 1 FROM path_tags WHERE path_id = ? AND tag_id = ? AND deleted_at IS NULL'
+    )
+    chk.bind([pathId, tagId])
+    if (chk.step()) {
+      chk.free()
+      this.schedulePersist()
+      return
+    }
+    chk.free()
+    const dead = this.db.prepare(
+      'SELECT 1 FROM path_tags WHERE path_id = ? AND tag_id = ? AND deleted_at IS NOT NULL'
+    )
+    dead.bind([pathId, tagId])
+    if (dead.step()) {
+      dead.free()
+      this.db.run(
+        `UPDATE path_tags SET deleted_at = NULL, updated_at = datetime('now') WHERE path_id = ? AND tag_id = ?`,
+        [pathId, tagId]
+      )
+    } else {
+      dead.free()
+      this.db.run(
+        `INSERT INTO path_tags (path_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
+        [pathId, tagId, randomUUID()]
+      )
+    }
+    this.refreshPathTagUuids(pathId, tagId)
     this.schedulePersist()
   }
 
   removeTagFromPath(pathId: number, tagId: number): void {
-    this.db.run('DELETE FROM path_tags WHERE path_id = ? AND tag_id = ?', [pathId, tagId])
+    this.db.run(
+      `UPDATE path_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND tag_id = ? AND deleted_at IS NULL`,
+      [pathId, tagId]
+    )
     this.schedulePersist()
   }
 
   addExclusionToPath(pathId: number, tagId: number): void {
-    this.db.run('INSERT OR IGNORE INTO path_tag_exclusions (path_id, tag_id) VALUES (?, ?)', [pathId, tagId])
+    const chk = this.db.prepare(
+      'SELECT 1 FROM path_tag_exclusions WHERE path_id = ? AND tag_id = ? AND deleted_at IS NULL'
+    )
+    chk.bind([pathId, tagId])
+    if (chk.step()) {
+      chk.free()
+      this.schedulePersist()
+      return
+    }
+    chk.free()
+    const dead = this.db.prepare(
+      'SELECT 1 FROM path_tag_exclusions WHERE path_id = ? AND tag_id = ? AND deleted_at IS NOT NULL'
+    )
+    dead.bind([pathId, tagId])
+    if (dead.step()) {
+      dead.free()
+      this.db.run(
+        `UPDATE path_tag_exclusions SET deleted_at = NULL, updated_at = datetime('now') WHERE path_id = ? AND tag_id = ?`,
+        [pathId, tagId]
+      )
+    } else {
+      dead.free()
+      this.db.run(
+        `INSERT INTO path_tag_exclusions (path_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
+        [pathId, tagId, randomUUID()]
+      )
+    }
+    this.refreshPathExclusionUuids(pathId, tagId)
     this.schedulePersist()
   }
 
   removeExclusionFromPath(pathId: number, tagId: number): void {
-    this.db.run('DELETE FROM path_tag_exclusions WHERE path_id = ? AND tag_id = ?', [pathId, tagId])
+    this.db.run(
+      `UPDATE path_tag_exclusions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND tag_id = ? AND deleted_at IS NULL`,
+      [pathId, tagId]
+    )
     this.schedulePersist()
   }
 
   setPathTags(absPath: string, tagNames: string[]): void {
     const p = normalizePath(absPath)
     const pathId = this.upsertPath(p, this.getPathKind(p) ?? 'file')
-    this.db.run('DELETE FROM path_tags WHERE path_id = ?', [pathId])
+    this.db.run(
+      `UPDATE path_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND deleted_at IS NULL`,
+      [pathId]
+    )
     for (const raw of tagNames) {
       const n = normalizeTagName(raw)
       if (!n) continue
       const t = this.getOrCreateTag(n)
       this.addTagToPath(pathId, t.id)
     }
+    this.db.run(
+      `UPDATE path_tags SET path_uuid = (SELECT uuid FROM paths WHERE id = path_tags.path_id), tag_uuid = (SELECT uuid FROM tags WHERE id = path_tags.tag_id) WHERE path_id = ? AND deleted_at IS NULL`,
+      [pathId]
+    )
     this.schedulePersist()
   }
 
   setPathExcludedTags(absPath: string, excludedTagNames: string[]): void {
     const p = normalizePath(absPath)
     const pathId = this.upsertPath(p, this.getPathKind(p) ?? 'file')
-    this.db.run('DELETE FROM path_tag_exclusions WHERE path_id = ?', [pathId])
+    this.db.run(
+      `UPDATE path_tag_exclusions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND deleted_at IS NULL`,
+      [pathId]
+    )
     for (const raw of excludedTagNames) {
       const n = normalizeTagName(raw)
       if (!n) continue
       const t = this.getOrCreateTag(n)
       this.addExclusionToPath(pathId, t.id)
     }
+    this.db.run(
+      `UPDATE path_tag_exclusions SET path_uuid = (SELECT uuid FROM paths WHERE id = path_tag_exclusions.path_id), tag_uuid = (SELECT uuid FROM tags WHERE id = path_tag_exclusions.tag_id) WHERE path_id = ? AND deleted_at IS NULL`,
+      [pathId]
+    )
     this.schedulePersist()
   }
 
   getDirectTagNamesForPathId(pathId: number): string[] {
     const stmt = this.db.prepare(
       `SELECT t.name FROM path_tags pt
-       JOIN tags t ON t.id = pt.tag_id
-       WHERE pt.path_id = ?
+       JOIN tags t ON t.id = pt.tag_id AND t.deleted_at IS NULL
+       WHERE pt.path_id = ? AND pt.deleted_at IS NULL
        ORDER BY t.name COLLATE NOCASE`
     )
     stmt.bind([pathId])
@@ -822,7 +1064,7 @@ export class TagDatabase {
     // אחרת UI מציג "רק את התגיות של התיקייה" ולא את המצב האפקטיבי.
     const pathIdsToCheck = [norm, ...ancestorDirsOfFile(norm)]
     const placeholders = pathIdsToCheck.map(() => '?').join(',')
-    const stmt = this.db.prepare(`SELECT id FROM paths WHERE path IN (${placeholders})`)
+    const stmt = this.db.prepare(`SELECT id FROM paths WHERE path IN (${placeholders}) AND deleted_at IS NULL`)
     stmt.bind(pathIdsToCheck)
     const pathIds: number[] = []
     while (stmt.step()) {
@@ -832,7 +1074,8 @@ export class TagDatabase {
     if (pathIds.length === 0) return []
     const idPlaceholders = pathIds.map(() => '?').join(',')
     const tagStmt = this.db.prepare(
-      `SELECT DISTINCT t.id, t.name FROM path_tags pt JOIN tags t ON t.id = pt.tag_id WHERE pt.path_id IN (${idPlaceholders})`
+      `SELECT DISTINCT t.id, t.name FROM path_tags pt JOIN tags t ON t.id = pt.tag_id AND t.deleted_at IS NULL
+       WHERE pt.path_id IN (${idPlaceholders}) AND pt.deleted_at IS NULL`
     )
     tagStmt.bind(pathIds)
     const tagIds = new Set<number>()
@@ -846,7 +1089,7 @@ export class TagDatabase {
     const pathId = this.getPathId(norm)
     if (pathId !== undefined) {
       const exclStmt = this.db.prepare(
-        'SELECT tag_id FROM path_tag_exclusions WHERE path_id = ?'
+        'SELECT tag_id FROM path_tag_exclusions WHERE path_id = ? AND deleted_at IS NULL'
       )
       exclStmt.bind([pathId])
       while (exclStmt.step()) {
@@ -863,7 +1106,8 @@ export class TagDatabase {
   private loadPathExclusionMap(): Map<string, Set<number>> {
     const stmt = this.db.prepare(
       `SELECT p.path, pte.tag_id FROM paths p
-       JOIN path_tag_exclusions pte ON pte.path_id = p.id`
+       JOIN path_tag_exclusions pte ON pte.path_id = p.id AND pte.deleted_at IS NULL
+       WHERE p.deleted_at IS NULL`
     )
     const m = new Map<string, Set<number>>()
     while (stmt.step()) {
@@ -884,7 +1128,8 @@ export class TagDatabase {
   private loadPathTagIdMap(): Map<string, Set<number>> {
     const stmt = this.db.prepare(
       `SELECT p.path, pt.tag_id FROM paths p
-       JOIN path_tags pt ON pt.path_id = p.id`
+       JOIN path_tags pt ON pt.path_id = p.id AND pt.deleted_at IS NULL
+       WHERE p.deleted_at IS NULL`
     )
     const m = new Map<string, Set<number>>()
     while (stmt.step()) {
@@ -903,7 +1148,7 @@ export class TagDatabase {
   }
 
   private loadTagIdToName(): Map<number, string> {
-    const stmt = this.db.prepare('SELECT id, name FROM tags')
+    const stmt = this.db.prepare('SELECT id, name FROM tags WHERE deleted_at IS NULL')
     const m = new Map<number, string>()
     while (stmt.step()) {
       const r = stmt.get()
@@ -914,7 +1159,7 @@ export class TagDatabase {
   }
 
   private loadFilePaths(): string[] {
-    const stmt = this.db.prepare(`SELECT path FROM paths WHERE kind = 'file'`)
+    const stmt = this.db.prepare(`SELECT path FROM paths WHERE kind = 'file' AND deleted_at IS NULL`)
     const paths: string[] = []
     while (stmt.step()) {
       paths.push(stmt.get()[0] as string)
@@ -940,7 +1185,9 @@ export class TagDatabase {
   }
 
   listAllPathsWithDirectTags(): { path: string; kind: PathKind; tags: string[] }[] {
-    const stmt = this.db.prepare(`SELECT id, path, kind FROM paths ORDER BY path COLLATE NOCASE`)
+    const stmt = this.db.prepare(
+      `SELECT id, path, kind FROM paths WHERE deleted_at IS NULL ORDER BY path COLLATE NOCASE`
+    )
     const rows: { id: number; path: string; kind: PathKind }[] = []
     while (stmt.step()) {
       const r = stmt.get()
@@ -991,7 +1238,7 @@ export class TagDatabase {
     const idToName = this.loadTagIdToName()
     const pathTagMap = this.loadPathTagIdMap()
     const exclusionMap = this.loadPathExclusionMap()
-    const stmt = this.db.prepare('SELECT path, kind FROM paths ORDER BY path COLLATE NOCASE')
+    const stmt = this.db.prepare('SELECT path, kind FROM paths WHERE deleted_at IS NULL ORDER BY path COLLATE NOCASE')
     const entries: TagExportEntry[] = []
     while (stmt.step()) {
       const row = stmt.get()
@@ -1241,7 +1488,7 @@ export class TagDatabase {
     for (const raw of names) {
       const n = normalizeTagName(raw)
       if (!n) continue
-      const stmt = this.db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE')
+      const stmt = this.db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL')
       stmt.bind([n])
       if (stmt.step()) ids.push(stmt.get()[0] as number)
       stmt.free()
@@ -1252,7 +1499,7 @@ export class TagDatabase {
   getTagIdByName(name: string): number | undefined {
     const n = normalizeTagName(name)
     if (!n) return undefined
-    const stmt = this.db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE')
+    const stmt = this.db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL')
     stmt.bind([n])
     let id: number | undefined
     if (stmt.step()) {
@@ -1260,5 +1507,10 @@ export class TagDatabase {
     }
     stmt.free()
     return id
+  }
+
+  /** Supabase row sync (main process only). */
+  getSyncBridge(): SqliteSyncBridge {
+    return new SqliteSyncBridge(this.db)
   }
 }

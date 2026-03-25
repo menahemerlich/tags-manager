@@ -23,6 +23,7 @@ import type {
   WatermarkPreviewPayload,
   WatermarkExportResult
 } from './types'
+import type { ConflictListPayload, SyncCheckResult, SyncProgressPayload, SyncSummary } from './types/sync.types'
 
 /** Shape of `window.api` exposed from preload (for renderer typing). */
 export interface ElectronApi {
@@ -77,4 +78,21 @@ export interface ElectronApi {
   exportWatermarkedImage: (payload: WatermarkExportPayload) => Promise<WatermarkExportResult>,
   showInFolder: (filePath: string) => Promise<void>
   openPath: (filePath: string) => Promise<string>
+  supabaseSyncCheck: () => Promise<SyncCheckResult>
+  supabaseSyncPush: () => Promise<SyncSummary>
+  supabaseSyncPull: () => Promise<SyncSummary>
+  supabaseSyncTestConnection: () => Promise<{ ok: boolean; error?: string }>
+  supabaseSyncReadConflicts: () => Promise<ConflictListPayload>
+  supabaseSyncResolveConflicts: (
+    resolutions: { id: string; choice: 'keep-mine' | 'use-cloud' }[]
+  ) => Promise<{ ok: boolean; error?: string }>
+  supabaseSyncResetState: () => Promise<{ ok: boolean; error?: string }>
+  supabaseSyncStatus: () => Promise<{
+    lastPushAt?: string
+    lastPullAt?: string
+    pendingConflicts: number
+    deviceId?: string
+  }>
+  supabaseSyncReadMigrationSql: () => Promise<{ ok: boolean; sql?: string; error?: string }>
+  onSupabaseSyncProgress: (cb: (p: SyncProgressPayload) => void) => () => void
 }

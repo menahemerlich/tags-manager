@@ -27,6 +27,7 @@ import type { PathKind } from '../shared/types'
 import { analyzeImageWithOnnx } from './faceEngine'
 import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
 import { defaultWatermarkedFilePath, exportWatermarkedImage, renderWatermarkPreviewDataUrl } from './watermark'
+import { registerSupabaseSyncIpc } from './ipc/sync.ipc'
 
 let indexAbort: AbortController | null = null
 
@@ -394,6 +395,8 @@ export function registerIpcHandlers(
   getDb: () => TagDatabase,
   getWindow: () => BrowserWindow | null
 ): void {
+  registerSupabaseSyncIpc(app, getDb, getWindow)
+
   const sendProgress = (wc: WebContents | undefined, payload: { done: number; total: number; currentPath: string }) => {
     wc?.send('index:progress', payload)
   }
@@ -668,7 +671,11 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('settings:set', async (_e, s: AppSettings) => {
-    saveSettings(app, { githubRepo: s.githubRepo ?? '' })
+    const current = loadSettings(app)
+    saveSettings(app, {
+      githubRepo: s.githubRepo ?? '',
+      sync: { ...current.sync, ...s.sync }
+    })
     return { ok: true as const }
   })
 

@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.100.0",
     "@tensorflow/tfjs-backend-cpu": "^4.22.0",
     "face-api.js": "^0.22.2",
     "jimp": "^1.6.0",

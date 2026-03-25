@@ -1,5 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AppSettings } from '../shared/types'
+import {
+  SYNC_CHECK,
+  SYNC_PULL,
+  SYNC_PUSH,
+  SYNC_PROGRESS,
+  SYNC_READ_MIGRATION_SQL,
+  SYNC_READ_PENDING_CONFLICTS,
+  SYNC_RESET_STATE,
+  SYNC_RESOLVE_CONFLICTS,
+  SYNC_STATUS,
+  SYNC_TEST_CONNECTION
+} from '../shared/constants/ipc-channels'
+import type { ConflictListPayload, SyncCheckResult, SyncProgressPayload, SyncSummary } from '../shared/types/sync.types'
 import type {
   PathKind,
   SearchResult,
@@ -120,7 +133,33 @@ const api = {
   exportWatermarkedImage: (payload: WatermarkExportPayload) =>
     ipcRenderer.invoke('images:export-watermarked', payload) as Promise<WatermarkExportResult>,
   showInFolder: (filePath: string) => ipcRenderer.invoke('shell:show-in-folder', filePath) as Promise<void>,
-  openPath: (filePath: string) => ipcRenderer.invoke('shell:open-path', filePath) as Promise<string>
+  openPath: (filePath: string) => ipcRenderer.invoke('shell:open-path', filePath) as Promise<string>,
+  supabaseSyncCheck: () => ipcRenderer.invoke(SYNC_CHECK) as Promise<SyncCheckResult>,
+  supabaseSyncPush: () => ipcRenderer.invoke(SYNC_PUSH) as Promise<SyncSummary>,
+  supabaseSyncPull: () => ipcRenderer.invoke(SYNC_PULL) as Promise<SyncSummary>,
+  supabaseSyncTestConnection: () =>
+    ipcRenderer.invoke(SYNC_TEST_CONNECTION) as Promise<{ ok: boolean; error?: string }>,
+  supabaseSyncReadConflicts: () =>
+    ipcRenderer.invoke(SYNC_READ_PENDING_CONFLICTS) as Promise<ConflictListPayload>,
+  supabaseSyncResolveConflicts: (resolutions: { id: string; choice: 'keep-mine' | 'use-cloud' }[]) =>
+    ipcRenderer.invoke(SYNC_RESOLVE_CONFLICTS, { resolutions }) as Promise<{ ok: boolean; error?: string }>,
+  supabaseSyncResetState: () =>
+    ipcRenderer.invoke(SYNC_RESET_STATE) as Promise<{ ok: boolean; error?: string }>,
+  supabaseSyncStatus: () =>
+    ipcRenderer.invoke(SYNC_STATUS) as Promise<{
+      lastPushAt?: string
+      lastPullAt?: string
+      pendingConflicts: number
+      deviceId?: string
+    }>,
+  supabaseSyncReadMigrationSql: () =>
+    ipcRenderer.invoke(SYNC_READ_MIGRATION_SQL) as Promise<{ ok: boolean; sql?: string; error?: string }>
+  ,
+  onSupabaseSyncProgress: (cb: (p: SyncProgressPayload) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: SyncProgressPayload) => cb(payload)
+    ipcRenderer.on(SYNC_PROGRESS, handler)
+    return () => ipcRenderer.removeListener(SYNC_PROGRESS, handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)
