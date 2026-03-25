@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
 import type {
   BlurParams,
   BlurSelection,
@@ -23,6 +24,8 @@ import {
 import * as faceapi from 'face-api.js'
 import '@tensorflow/tfjs-backend-cpu'
 import SyncPage from './pages/Sync/SyncPage'
+import { FilePreview } from './components/FilePreview'
+import { TableVirtuoso } from 'react-virtuoso'
 
 type Tab = 'library' | 'search' | 'tags' | 'settings' | 'cloud-sync'
 
@@ -79,6 +82,133 @@ function loadImageDimensions(imageSrc: string): Promise<{ width: number; height:
   })
 }
 
+function isWatermarkVideoPath(filePath: string): boolean {
+  const p = filePath.toLowerCase()
+  return ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'].some((ext) => p.endsWith(ext))
+}
+
+function formatWatermarkTimeSec(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00'
+  const m = Math.floor(sec / 60)
+  const s = sec - m * 60
+  const wholeS = Math.floor(s)
+  const frac = Math.round((s - wholeS) * 10)
+  if (frac <= 0) return `${m}:${String(wholeS).padStart(2, '0')}`
+  return `${m}:${String(wholeS).padStart(2, '0')}.${frac}`
+}
+
+const CLIP_HANDLE_MIN_GAP_SEC = 0.15
+
+function VideoClipRangeBar(props: {
+  durationSec: number
+  startSec: number
+  endSec: number
+  onRangeChange: (start: number, end: number) => void
+  videoRef: RefObject<HTMLVideoElement | null>
+}) {
+  const { durationSec, startSec, endSec, onRangeChange, videoRef } = props
+  const trackRef = useRef<HTMLDivElement | null>(null)
+  const dragKind = useRef<'start' | 'end' | null>(null)
+  const rangeRef = useRef({ start: startSec, end: endSec })
+  rangeRef.current = { start: startSec, end: endSec }
+
+  const posToTime = useCallback(
+    (clientX: number) => {
+      const el = trackRef.current
+      if (!el || durationSec <= 0) return 0
+      const r = el.getBoundingClientRect()
+      const ratio = clampNumber((clientX - r.left) / Math.max(1, r.width), 0, 1)
+      return ratio * durationSec
+    },
+    [durationSec]
+  )
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const kind = dragKind.current
+      if (!kind) return
+      const t = posToTime(e.clientX)
+      const { start, end } = rangeRef.current
+      const gap = CLIP_HANDLE_MIN_GAP_SEC
+      if (kind === 'start') {
+        const maxS = Math.max(0, end - gap)
+        onRangeChange(Math.min(t, maxS), end)
+      } else {
+        const minE = Math.min(durationSec, start + gap)
+        onRangeChange(start, Math.max(t, minE))
+      }
+    }
+    const endDrag = () => {
+      dragKind.current = null
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', endDrag)
+    window.addEventListener('pointercancel', endDrag)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', endDrag)
+      window.removeEventListener('pointercancel', endDrag)
+    }
+  }, [durationSec, onRangeChange, posToTime])
+
+  const pct = (sec: number) => (durationSec > 0 ? (sec / durationSec) * 100 : 0)
+
+  return (
+    <div className="watermark-clip-timeline">
+      <p className="muted small watermark-clip-timeline-hint">
+        גרור את הסימונים לתחילת וסוף הקטע לייצוא. לחיצה על הפס מקדימה את הנגן.
+      </p>
+      <div className="watermark-clip-timeline-times">
+        <span className="watermark-clip-time-label">התחלה {formatWatermarkTimeSec(startSec)}</span>
+        <span className="watermark-clip-time-label">סיום {formatWatermarkTimeSec(endSec)}</span>
+      </div>
+      <div
+        ref={trackRef}
+        className="watermark-clip-track"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('.watermark-clip-handle')) return
+          const t = posToTime(e.clientX)
+          const v = videoRef.current
+          if (v) v.currentTime = t
+        }}
+        role="presentation"
+      >
+        <div
+          className="watermark-clip-selected"
+          style={{ left: `${pct(startSec)}%`, width: `${pct(endSec - startSec)}%` }}
+        />
+        <button
+          type="button"
+          className="watermark-clip-handle watermark-clip-handle-start"
+          aria-label="תחילת קטע לייצוא"
+          style={{ left: `${pct(startSec)}%` }}
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            dragKind.current = 'start'
+          }}
+        />
+        <button
+          type="button"
+          className="watermark-clip-handle watermark-clip-handle-end"
+          aria-label="סוף קטע לייצוא"
+          style={{ left: `${pct(endSec)}%` }}
+          onPointerDown={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            dragKind.current = 'end'
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+type WatermarkExportOverlayState =
+  | null
+  | { kind: 'video'; percent: number; fileName: string }
+  | { kind: 'image'; fileName: string }
+
 export default function App() {
   const [tab, setTab] = useState<Tab | FaceTab>('library')
   const [librarySelectedItems, setLibrarySelectedItems] = useState<{ path: string; kind: PathKind }[] | null>(null)
@@ -130,6 +260,8 @@ export default function App() {
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null)
   const [indexing, setIndexing] = useState<{ done: number; total: number; currentPath: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [watermarkOpenFromPreview, setWatermarkOpenFromPreview] = useState<{ path: string; id: number } | null>(null)
+  const [faceOpenFromPreview, setFaceOpenFromPreview] = useState<{ path: string; id: number } | null>(null)
   const tagFolderPickerResolverRef = useRef<((value: number | null | undefined) => void) | null>(null)
 
   const refreshTags = useCallback(async () => {
@@ -626,6 +758,24 @@ export default function App() {
     await runSearch()
   }
 
+  const openPreviewInWatermarkTab = useCallback((path: string) => {
+    setTab('watermark')
+    setWatermarkOpenFromPreview((prev) => ({ path, id: (prev?.id ?? 0) + 1 }))
+  }, [])
+
+  const openPreviewInFacesTab = useCallback((path: string) => {
+    setTab('faces')
+    setFaceOpenFromPreview((prev) => ({ path, id: (prev?.id ?? 0) + 1 }))
+  }, [])
+
+  const onWatermarkOpenFromPreviewHandled = useCallback((handledId: number) => {
+    setWatermarkOpenFromPreview((cur) => (cur?.id === handledId ? null : cur))
+  }, [])
+
+  const onFaceOpenFromPreviewHandled = useCallback((handledId: number) => {
+    setFaceOpenFromPreview((cur) => (cur?.id === handledId ? null : cur))
+  }, [])
+
   async function chooseTagIoScope() {
     setError(null)
     const folder = await window.api.pickFolder()
@@ -795,7 +945,17 @@ export default function App() {
                 <ul className="path-list" style={{ marginBottom: '1rem' }}>
                   {librarySelectedItems.map((item) => (
                     <li key={item.path} className="path-cell">
-                      {item.path} <span className="muted">({kindHe(item.kind)})</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                        <FilePreview
+                          key={item.path}
+                          filePath={item.path}
+                          onOpenInWatermark={openPreviewInWatermarkTab}
+                          onOpenInFaces={openPreviewInFacesTab}
+                        />
+                        <span>
+                          {item.path} <span className="muted">({kindHe(item.kind)})</span>
+                        </span>
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -1067,74 +1227,80 @@ export default function App() {
                 מחפש...
               </p>
             )}
-            <div className="table-wrap">
-              <table>
-                <thead>
+            <div className="table-wrap" style={{ height: '60vh' }}>
+              <TableVirtuoso
+                data={searchResultsFiltered}
+                fixedHeaderContent={() => (
                   <tr>
+                    <th style={{ width: 44 }} />
                     <th>קובץ</th>
                     <th>תגיות</th>
                     <th />
                   </tr>
-                </thead>
-                <tbody>
-                  {searchResultsFiltered.map((row) => (
-                    <tr
-                      key={row.path}
-                      className={selectedSearchPath === row.path ? 'selected' : ''}
-                    >
-                      <td className="path-cell">
-                        <button
-                          type="button"
-                          className="path-open-btn"
-                          onClick={() => void window.api.openPath(row.path)}
-                          title="פתח קובץ"
-                        >
-                          {row.path}
-                        </button>
-                      </td>
-                      <td>
-                        <div className="search-tags-collapsed">
-                          <div className="tags">
-                            {row.tags.slice(0, 5).map((t) => (
-                              <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
-                                {formatTagLabel(t)}
-                              </span>
-                            ))}
-                          </div>
-                          {row.tags.length > 5 && (
-                            <button
-                              type="button"
-                              className="btn small-btn"
-                              style={{ marginTop: '0.35rem' }}
-                              onClick={() => setSearchTagsModal({ open: true, path: row.path, tags: row.tags })}
-                            >
-                              הצג את כל התגיות ({row.tags.length})
-                            </button>
-                          )}
+                )}
+                itemClassName={(index) => (selectedSearchPath === searchResultsFiltered[index]?.path ? 'selected' : '')}
+                itemContent={(_index, row) => (
+                  <>
+                    <td>
+                      <FilePreview
+                        key={row.path}
+                        filePath={row.path}
+                        onOpenInWatermark={openPreviewInWatermarkTab}
+                        onOpenInFaces={openPreviewInFacesTab}
+                      />
+                    </td>
+                    <td className="path-cell">
+                      <button
+                        type="button"
+                        className="path-open-btn"
+                        onClick={() => void window.api.openPath(row.path)}
+                        title="פתח קובץ"
+                      >
+                        {row.path}
+                      </button>
+                    </td>
+                    <td>
+                      <div className="search-tags-collapsed">
+                        <div className="tags">
+                          {row.tags.slice(0, 5).map((t) => (
+                            <span key={t} className={getTagClassName(t, 'tag')} style={getTagAccentStyle(t)}>
+                              {formatTagLabel(t)}
+                            </span>
+                          ))}
                         </div>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className="btn small-btn"
-                          onClick={() => handleSelectSearchResult(row.path)}
-                          title="ערוך תגיות"
-                        >
-                          ערוך
-                        </button>
-                        <button
-                          type="button"
-                          className="btn small-btn"
-                          onClick={() => window.api.showInFolder(row.path)}
-                          title="הצג בסייר הקבצים"
-                        >
-                          הצג בסייר
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        {row.tags.length > 5 && (
+                          <button
+                            type="button"
+                            className="btn small-btn"
+                            style={{ marginTop: '0.35rem' }}
+                            onClick={() => setSearchTagsModal({ open: true, path: row.path, tags: row.tags })}
+                          >
+                            הצג את כל התגיות ({row.tags.length})
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn small-btn"
+                        onClick={() => handleSelectSearchResult(row.path)}
+                        title="ערוך תגיות"
+                      >
+                        ערוך
+                      </button>
+                      <button
+                        type="button"
+                        className="btn small-btn"
+                        onClick={() => window.api.showInFolder(row.path)}
+                        title="הצג בסייר הקבצים"
+                      >
+                        הצג בסייר
+                      </button>
+                    </td>
+                  </>
+                )}
+              />
             </div>
             {selectedSearchPath && (
               <div
@@ -1359,13 +1525,20 @@ export default function App() {
 
         {tab === 'faces' && (
           <section className="panel">
-            <FaceRecognitionTab onTagsChanged={refreshSearchTagData} />
+            <FaceRecognitionTab
+              onTagsChanged={refreshSearchTagData}
+              openFromPreview={faceOpenFromPreview}
+              onOpenFromPreviewHandled={onFaceOpenFromPreviewHandled}
+            />
           </section>
         )}
 
         {tab === 'watermark' && (
           <section className="panel">
-            <WatermarkEditorTab />
+            <WatermarkEditorTab
+              openFromPreview={watermarkOpenFromPreview}
+              onOpenFromPreviewHandled={onWatermarkOpenFromPreviewHandled}
+            />
           </section>
         )}
 
@@ -1787,11 +1960,21 @@ export default function App() {
   )
 }
 
-function WatermarkEditorTab() {
+function WatermarkEditorTab({
+  openFromPreview,
+  onOpenFromPreviewHandled
+}: {
+  openFromPreview?: { path: string; id: number } | null
+  onOpenFromPreviewHandled?: (handledId: number) => void
+}) {
   const defaultWatermarkAssetUrl = useMemo(() => new URL('./icon.png', window.location.href).toString(), [])
   const [baseImagePath, setBaseImagePath] = useState<string | null>(null)
   const [baseImageSrc, setBaseImageSrc] = useState<string | null>(null)
   const [baseImageSize, setBaseImageSize] = useState<{ width: number; height: number } | null>(null)
+  const [baseVideoUrl, setBaseVideoUrl] = useState<string | null>(null)
+  const [videoDurationSec, setVideoDurationSec] = useState(0)
+  const [clipStartSec, setClipStartSec] = useState(0)
+  const [clipEndSec, setClipEndSec] = useState(0)
   const [watermarkImagePath, setWatermarkImagePath] = useState<string | null>(defaultWatermarkAssetUrl)
   const [watermarkImageSrc, setWatermarkImageSrc] = useState<string | null>(defaultWatermarkAssetUrl)
   const [defaultWatermarkAspectRatio, setDefaultWatermarkAspectRatio] = useState(1)
@@ -1809,12 +1992,18 @@ function WatermarkEditorTab() {
   const [blurPreviewSourceKey, setBlurPreviewSourceKey] = useState(0)
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
   const [isExporting, setIsExporting] = useState(false)
+  const [exportOverlay, setExportOverlay] = useState<WatermarkExportOverlayState>(null)
   const [exportMsg, setExportMsg] = useState<string | null>(null)
   const [editorError, setEditorError] = useState<string | null>(null)
   const isCustomWatermark = !!watermarkImagePath && watermarkImagePath !== defaultWatermarkAssetUrl
   const isSelectionToolActive = activeTool === 'crop' || activeTool === 'blur'
+  const baseIsVideo = useMemo(
+    () => !!baseImagePath && isWatermarkVideoPath(baseImagePath),
+    [baseImagePath]
+  )
 
   const baseImgRef = useRef<HTMLImageElement | null>(null)
+  const baseVideoRef = useRef<HTMLVideoElement | null>(null)
   const dragStateRef = useRef<{
     mode: 'move' | 'resize'
     startClientX: number
@@ -1833,13 +2022,18 @@ function WatermarkEditorTab() {
   const blurPreviewTimerRef = useRef<number | null>(null)
 
   const updateStageSize = useCallback(() => {
-    const imgEl = baseImgRef.current
-    if (!imgEl) return
-    const rect = imgEl.getBoundingClientRect()
+    const el = baseVideoRef.current ?? baseImgRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
     setStageSize({
       width: Math.max(0, rect.width),
       height: Math.max(0, rect.height)
     })
+  }, [])
+
+  const onClipRangeChange = useCallback((start: number, end: number) => {
+    setClipStartSec(start)
+    setClipEndSec(end)
   }, [])
 
   const placeDefaultWatermark = useCallback((baseWidth: number, baseHeight: number, aspectRatio: number) => {
@@ -1892,6 +2086,25 @@ function WatermarkEditorTab() {
     [getPlacementBounds]
   )
 
+  const onBaseVideoMetadata = useCallback(() => {
+    const v = baseVideoRef.current
+    if (!v || v.videoWidth <= 0 || v.videoHeight <= 0) return
+    const w = v.videoWidth
+    const h = v.videoHeight
+    setBaseImageSize({ width: w, height: h })
+    const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0
+    setVideoDurationSec(dur)
+    setClipStartSec(0)
+    setClipEndSec(dur > 0 ? dur : 0.1)
+    if (watermarkImageSrc) {
+      const ratio = watermarkAspectRatio > 0 ? watermarkAspectRatio : 1
+      const defaultRect = placeDefaultWatermark(w, h, ratio)
+      setWatermarkRect(clampWatermarkIntoBounds(defaultRect, { width: w, height: h }, null))
+    } else {
+      setWatermarkRect(null)
+    }
+  }, [clampWatermarkIntoBounds, placeDefaultWatermark, watermarkAspectRatio, watermarkImageSrc])
+
   const currentWatermarkBounds = useMemo(
     () => (activeTool === 'crop' ? selectionRect : null),
     [activeTool, selectionRect]
@@ -1942,6 +2155,10 @@ function WatermarkEditorTab() {
 
   const activateTool = useCallback(
     (tool: WatermarkToolMode) => {
+      if (baseImagePath && isWatermarkVideoPath(baseImagePath) && tool !== 'none') {
+        setEditorError('כלי חיתוך וטשטוש אינם זמינים כשהמדיה הראשית היא וידאו.')
+        return
+      }
       if (!baseImageSize && tool !== 'none') {
         setEditorError('בחר תמונה ראשית לפני שימוש בכלים.')
         return
@@ -1950,13 +2167,17 @@ function WatermarkEditorTab() {
       setActiveTool(tool)
       if (tool !== 'none') ensureSelectionRect()
     },
-    [baseImageSize, ensureSelectionRect]
+    [baseImagePath, baseImageSize, ensureSelectionRect]
   )
 
   function resetEditor(): void {
     setBaseImagePath(null)
     setBaseImageSrc(null)
     setBaseImageSize(null)
+    setBaseVideoUrl(null)
+    setVideoDurationSec(0)
+    setClipStartSec(0)
+    setClipEndSec(0)
     setWatermarkImagePath(defaultWatermarkAssetUrl)
     setWatermarkImageSrc(defaultWatermarkAssetUrl)
     setWatermarkAspectRatio(defaultWatermarkAspectRatio)
@@ -1973,6 +2194,7 @@ function WatermarkEditorTab() {
     setBlurPreviewSourceKey(0)
     setStageSize({ width: 0, height: 0 })
     setIsExporting(false)
+    setExportOverlay(null)
     setExportMsg(null)
     setEditorError(null)
     dragStateRef.current = null
@@ -2003,18 +2225,27 @@ function WatermarkEditorTab() {
   }, [defaultWatermarkAssetUrl])
 
   useEffect(() => {
-    if (!baseImageSrc) return
+    if (baseImagePath && isWatermarkVideoPath(baseImagePath)) {
+      setActiveTool('none')
+      setIsToolsOpen(false)
+      setProcessedPreviewSrc(null)
+      blurPreviewSourceRef.current = null
+    }
+  }, [baseImagePath])
+
+  useEffect(() => {
+    if (!baseImageSrc && !baseVideoUrl) return
     updateStageSize()
-    const imgEl = baseImgRef.current
-    if (!imgEl || typeof ResizeObserver === 'undefined') return
+    const target = baseVideoRef.current ?? baseImgRef.current
+    if (!target || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => updateStageSize())
-    observer.observe(imgEl)
+    observer.observe(target)
     window.addEventListener('resize', updateStageSize)
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', updateStageSize)
     }
-  }, [baseImageSrc, updateStageSize])
+  }, [baseImageSrc, baseVideoUrl, updateStageSize])
 
   useEffect(() => {
     let disposed = false
@@ -2246,11 +2477,37 @@ function WatermarkEditorTab() {
     }
   }, [endDrag, handleGlobalMouseMove, handleGlobalSelectionMouseMove])
 
-  async function pickBaseImage(): Promise<void> {
+  async function applyBaseMediaPath(nextPath: string): Promise<void> {
     setEditorError(null)
     setExportMsg(null)
-    const nextPath = await window.api.pickImage()
-    if (!nextPath) return
+    if (isWatermarkVideoPath(nextPath)) {
+      setActiveTool('none')
+      setIsToolsOpen(false)
+      setProcessedPreviewSrc(null)
+      blurPreviewSourceRef.current = null
+      setBaseImageSrc(null)
+      setBaseImageSize(null)
+      setSelectionRect(null)
+      setWatermarkRect(null)
+      setBaseImagePath(nextPath)
+      try {
+        const url = await window.api.getMediaUrl(nextPath)
+        setBaseVideoUrl(url)
+      } catch {
+        setEditorError('טעינת הסרט נכשלה.')
+        setBaseImagePath(null)
+        setBaseVideoUrl(null)
+        return
+      }
+      setVideoDurationSec(0)
+      setClipStartSec(0)
+      setClipEndSec(0)
+      return
+    }
+    setBaseVideoUrl(null)
+    setVideoDurationSec(0)
+    setClipStartSec(0)
+    setClipEndSec(0)
     const nextSrc = await window.api.getImageDataUrl(nextPath)
     if (!nextSrc) {
       setEditorError('טעינת התמונה הראשית נכשלה.')
@@ -2270,6 +2527,28 @@ function WatermarkEditorTab() {
       setWatermarkRect(null)
     }
     setSelectionRect(nextSelection)
+  }
+
+  useEffect(() => {
+    if (!openFromPreview) return
+    const { path, id } = openFromPreview
+    let cancelled = false
+    void (async () => {
+      try {
+        await applyBaseMediaPath(path)
+      } finally {
+        if (!cancelled) onOpenFromPreviewHandled?.(id)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [openFromPreview]) // eslint-disable-line react-hooks/exhaustive-deps -- handoff only when `openFromPreview` reference changes
+
+  async function pickBaseMedia(): Promise<void> {
+    const nextPath = await window.api.pickWatermarkBase()
+    if (!nextPath) return
+    await applyBaseMediaPath(nextPath)
   }
 
   async function pickWatermarkImage(): Promise<void> {
@@ -2327,19 +2606,59 @@ function WatermarkEditorTab() {
     }
   }
 
-  async function exportImage(): Promise<void> {
+  async function exportMain(): Promise<void> {
     if (!baseImagePath || !watermarkImagePath || !watermarkRect) {
-      setEditorError('יש לבחור תמונה ראשית וסימן מים לפני הייצוא.')
+      setEditorError('יש לבחור מדיה ראשית וסימן מים לפני הייצוא.')
       return
     }
-    if (activeTool !== 'none' && !selectionRect) {
+    if (baseIsVideo) {
+      if (!baseImageSize || videoDurationSec <= 0) {
+        setEditorError('ממתין לטעינת הווידאו. נסה שוב כשהתצוגה מוכנה.')
+        return
+      }
+      if (clipEndSec <= clipStartSec) {
+        setEditorError('זמן הסיום חייב להיות אחרי זמן ההתחלה.')
+        return
+      }
+    } else if (activeTool !== 'none' && !selectionRect) {
       setEditorError('בחר אזור על התמונה לפני הייצוא.')
       return
     }
     setEditorError(null)
     setExportMsg(null)
     setIsExporting(true)
+    let unsubVideoProgress: (() => void) | undefined
+    let unsubImageBusy: (() => void) | undefined
     try {
+      if (baseIsVideo) {
+        unsubVideoProgress = window.api.onWatermarkVideoExportProgress((p) => {
+          setExportOverlay((prev) => ({
+            kind: 'video',
+            percent: Math.min(100, Math.max(0, p.percent)),
+            fileName: p.outputBaseName ?? (prev?.kind === 'video' ? prev.fileName : '')
+          }))
+        })
+        const res = await window.api.exportWatermarkedVideo({
+          baseVideoPath: baseImagePath,
+          watermarkImagePath,
+          x: watermarkRect.x,
+          y: watermarkRect.y,
+          width: watermarkRect.width,
+          height: watermarkRect.height,
+          opacity: watermarkOpacity,
+          startSec: clipStartSec,
+          endSec: clipEndSec
+        })
+        if (!res.ok) {
+          if (!res.cancelled) setEditorError(res.error ?? 'ייצוא הסרט נכשל.')
+          return
+        }
+        setExportMsg(`הסרט יוצא בהצלחה: ${res.filePath}`)
+        return
+      }
+      unsubImageBusy = window.api.onWatermarkImageExportBusy((p) => {
+        setExportOverlay({ kind: 'image', fileName: p.outputBaseName })
+      })
       const res = await window.api.exportWatermarkedImage({
         baseImagePath,
         watermarkImagePath,
@@ -2365,6 +2684,9 @@ function WatermarkEditorTab() {
       }
       setExportMsg(`התמונה יוצאה בהצלחה: ${res.filePath}`)
     } finally {
+      unsubVideoProgress?.()
+      unsubImageBusy?.()
+      setExportOverlay(null)
       setIsExporting(false)
     }
   }
@@ -2493,8 +2815,9 @@ function WatermarkEditorTab() {
     }
   }, [activeTool, displaySelectionRect, selectionShape])
 
-  const toolSummary =
-    activeTool === 'crop'
+  const toolSummary = baseIsVideo
+    ? 'וידאו: ניתן להוסיף סימן מים ולייצא קטע בלבד (ללא חיתוך או טשטוש על הפריים).'
+    : activeTool === 'crop'
       ? `חיתוך פעיל: ${selectionShape === 'circle' ? 'עגול' : 'מרובע'}.`
       : activeTool === 'blur'
         ? `טשטוש רקע פעיל: ${selectionShape === 'circle' ? 'בחירה עגולה' : 'בחירה מרובעת'}.`
@@ -2502,11 +2825,19 @@ function WatermarkEditorTab() {
 
   const usesExactBlurPreview = activeTool === 'blur' && !!processedPreviewSrc
   const previewImageSrc = usesExactBlurPreview ? processedPreviewSrc : baseImageSrc
+  const showWatermarkStage = !!(previewImageSrc || baseVideoUrl)
+  const exportDisabled =
+    !baseImagePath ||
+    !watermarkImagePath ||
+    !watermarkRect ||
+    isExporting ||
+    (baseIsVideo && (videoDurationSec <= 0 || clipEndSec <= clipStartSec))
 
   return (
     <div className="watermark-editor-tab">
       <p className="muted small" style={{ marginTop: 0 }}>
-        טען תמונה ראשית, גרור את סימן המים למיקום הרצוי, והשתמש בכלים לחיתוך או לטשטוש רקע לפני הייצוא.
+        טען תמונה או סרטון ראשית, גרור את סימן המים למיקום הרצוי. בתמונות ניתן להשתמש בכלים לחיתוך או לטשטוש רקע לפני
+        הייצוא; בווידאו רק סימן מים וטווח זמן לייצוא.
       </p>
 
       {(editorError || exportMsg) && (
@@ -2518,8 +2849,8 @@ function WatermarkEditorTab() {
       <div className="watermark-workspace">
         <div className="watermark-side-panel">
           <div className="toolbar watermark-side-actions">
-            <button type="button" className="btn primary" onClick={() => void pickBaseImage()}>
-              בחר תמונה ראשית
+            <button type="button" className="btn primary" onClick={() => void pickBaseMedia()}>
+              בחר תמונה או סרטון ראשי
             </button>
             <button
               type="button"
@@ -2534,17 +2865,19 @@ function WatermarkEditorTab() {
                 type="button"
                 className={`btn ${isToolsOpen ? 'primary' : ''}`}
                 onClick={() => setIsToolsOpen((prev) => !prev)}
-                disabled={!baseImageSrc}
+                disabled={(!baseImageSrc && !baseVideoUrl) || baseIsVideo}
               >
                 כלים
               </button>
               <button
                 type="button"
                 className="btn primary watermark-export-btn"
-                onClick={() => void exportImage()}
-                disabled={!baseImagePath || !watermarkImagePath || !watermarkRect || isExporting}
-                title={isExporting ? 'מייצא...' : 'ייצא תמונה'}
-                aria-label={isExporting ? 'מייצא' : 'ייצא תמונה'}
+                onClick={() => void exportMain()}
+                disabled={exportDisabled}
+                title={
+                  isExporting ? 'מייצא...' : baseIsVideo ? 'ייצא קטע MP4 עם סימן מים' : 'ייצא תמונה'
+                }
+                aria-label={isExporting ? 'מייצא' : baseIsVideo ? 'ייצא סרט' : 'ייצא תמונה'}
               >
                 {isExporting ? (
                   <span className="watermark-export-spinner" aria-hidden="true" />
@@ -2562,7 +2895,7 @@ function WatermarkEditorTab() {
                 )}
               </button>
             </div>
-            {isToolsOpen && (
+            {isToolsOpen && !baseIsVideo && (
               <div className="watermark-tools-panel">
                 <div className="watermark-tool-icons-row">
                   <button
@@ -2689,8 +3022,20 @@ function WatermarkEditorTab() {
             />
           </div>
 
+          {baseIsVideo && videoDurationSec > 0 && (
+            <p className="muted small" style={{ margin: 0 }}>
+              טווח הקטע לייצוא מוגדר מתחת לתצוגת הווידאו (גרירת סימונים על ציר הזמן).
+            </p>
+          )}
+
           <div className="watermark-status-list">
-            <p className="muted small">{baseImagePath ? `תמונה ראשית: ${baseImagePath}` : 'עדיין לא נבחרה תמונה ראשית.'}</p>
+            <p className="muted small">
+              {baseImagePath
+                ? baseIsVideo
+                  ? `סרט ראשי: ${baseImagePath}`
+                  : `תמונה ראשית: ${baseImagePath}`
+                : 'עדיין לא נבחרה מדיה ראשית.'}
+            </p>
             <p className="muted small">
               {watermarkImagePath === defaultWatermarkAssetUrl
                 ? 'סימן המים הנוכחי: לוגו המערכת (ברירת מחדל).'
@@ -2709,25 +3054,38 @@ function WatermarkEditorTab() {
         </div>
 
         <div className="watermark-preview-card">
-          {previewImageSrc ? (
-            <div className="watermark-stage">
-              <img ref={baseImgRef} src={previewImageSrc} alt="" onLoad={updateStageSize} />
-              {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherBandStyle && (
+          {showWatermarkStage ? (
+            <div className="watermark-preview-media-col">
+              <div className="watermark-stage">
+              {baseVideoUrl ? (
+                <video
+                  ref={baseVideoRef}
+                  src={baseVideoUrl}
+                  controls
+                  muted
+                  playsInline
+                  onLoadedMetadata={onBaseVideoMetadata}
+                  onLoadedData={updateStageSize}
+                />
+              ) : (
+                <img ref={baseImgRef} src={previewImageSrc!} alt="" onLoad={updateStageSize} />
+              )}
+              {!baseIsVideo && activeTool === 'blur' && selectionShape === 'rect' && rectFeatherBandStyle && (
                 <div className="watermark-feather-band-rect" style={rectFeatherBandStyle} />
               )}
-              {activeTool === 'blur' && selectionShape === 'rect' && rectFeatherOuterStyle && (
+              {!baseIsVideo && activeTool === 'blur' && selectionShape === 'rect' && rectFeatherOuterStyle && (
                 <div className="watermark-feather-outer-rect" style={rectFeatherOuterStyle} />
               )}
-              {activeTool === 'blur' && selectionShape === 'rect' && innerSelectionBorderStyle && (
+              {!baseIsVideo && activeTool === 'blur' && selectionShape === 'rect' && innerSelectionBorderStyle && (
                 <div className="watermark-feather-inner-rect" style={innerSelectionBorderStyle} />
               )}
-              {activeTool === 'blur' && selectionShape === 'circle' && circleFeatherOuterStyle && (
+              {!baseIsVideo && activeTool === 'blur' && selectionShape === 'circle' && circleFeatherOuterStyle && (
                 <div className="watermark-feather-outer-circle" style={circleFeatherOuterStyle} />
               )}
-              {activeTool === 'blur' && selectionShape === 'circle' && innerSelectionBorderStyle && (
+              {!baseIsVideo && activeTool === 'blur' && selectionShape === 'circle' && innerSelectionBorderStyle && (
                 <div className="watermark-feather-inner-circle" style={innerSelectionBorderStyle} />
               )}
-              {selectionOverlayStyle && (
+              {!baseIsVideo && selectionOverlayStyle && (
                 <div
                   className={`watermark-selection-overlay ${activeTool === 'blur' ? 'blur' : 'crop'} ${selectionShape === 'circle' ? 'circle' : 'rect'}`}
                   style={selectionOverlayStyle}
@@ -2765,17 +3123,62 @@ function WatermarkEditorTab() {
                   />
                 </div>
               )}
+              </div>
+              {baseIsVideo && videoDurationSec > 0 && (
+                <VideoClipRangeBar
+                  durationSec={videoDurationSec}
+                  startSec={clipStartSec}
+                  endSec={clipEndSec}
+                  onRangeChange={onClipRangeChange}
+                  videoRef={baseVideoRef}
+                />
+              )}
             </div>
           ) : (
-            <div className="watermark-empty-state">בחר תמונה ראשית כדי להתחיל לערוך סימן מים.</div>
+            <div className="watermark-empty-state">בחר תמונה או סרטון ראשי כדי להתחיל.</div>
           )}
         </div>
       </div>
+      {exportOverlay &&
+        createPortal(
+          <div className="watermark-export-overlay" aria-live="polite" aria-busy="true">
+            <div className="watermark-export-overlay-card">
+              <p className="watermark-export-overlay-title">
+                מייצא{' '}
+                <span className="watermark-export-filename" dir="ltr">
+                  {exportOverlay.fileName || '…'}
+                </span>
+              </p>
+              {exportOverlay.kind === 'video' ? (
+                <>
+                  <div className="watermark-export-bar-wrap">
+                    <div
+                      className="watermark-export-bar-fill"
+                      style={{ width: `${exportOverlay.percent}%` }}
+                    />
+                  </div>
+                  <p className="watermark-export-percent">{Math.round(exportOverlay.percent)}%</p>
+                </>
+              ) : (
+                <div className="watermark-export-indeterminate" />
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }
 
-function FaceRecognitionTab({ onTagsChanged }: { onTagsChanged?: () => Promise<void> | void }) {
+function FaceRecognitionTab({
+  onTagsChanged,
+  openFromPreview,
+  onOpenFromPreviewHandled
+}: {
+  onTagsChanged?: () => Promise<void> | void
+  openFromPreview?: { path: string; id: number } | null
+  onOpenFromPreviewHandled?: (handledId: number) => void
+}) {
   const LEGACY_FACE_MODEL_ID = 'legacy.faceapi.v1'
   const [imagePath, setImagePath] = useState<string | null>(null)
   const [imageSrc, setImageSrc] = useState<string | null>(null)
@@ -2848,10 +3251,8 @@ function FaceRecognitionTab({ onTagsChanged }: { onTagsChanged?: () => Promise<v
     })
   }
 
-  async function pickImage() {
+  const loadFaceImagePath = useCallback(async (image: string) => {
     setImageError(null)
-    const image = await window.api.pickImage()
-    if (!image) return
     setImagePath(image)
     setImageSrc(null)
     setDetectedFaces([])
@@ -2874,6 +3275,28 @@ function FaceRecognitionTab({ onTagsChanged }: { onTagsChanged?: () => Promise<v
     } finally {
       setIsImageLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    if (!openFromPreview) return
+    const { path, id } = openFromPreview
+    let cancelled = false
+    void (async () => {
+      try {
+        await loadFaceImagePath(path)
+      } finally {
+        if (!cancelled) onOpenFromPreviewHandled?.(id)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [openFromPreview?.id, openFromPreview?.path, loadFaceImagePath, onOpenFromPreviewHandled])
+
+  async function pickImage() {
+    const image = await window.api.pickImage()
+    if (!image) return
+    await loadFaceImagePath(image)
   }
 
   function clearCurrentImage(): void {
@@ -3395,38 +3818,40 @@ function FaceRecognitionTab({ onTagsChanged }: { onTagsChanged?: () => Promise<v
               </div>
 
             <div className="face-image-preview">
-              {imageSrc && (
-                <img
-                  ref={imgRef}
-                  src={imageSrc}
-                  alt=""
-                  onError={() => {
-                    setImageError('טעינת תמונה נכשלה')
-                    setDetectedFaces([])
-                    setNameDrafts({})
-                  }}
-                />
-              )}
-              <div className="face-image-overlay">
-                {isImageLoading && <span className="face-image-overlay-text">טוען תמונה</span>}
-                {!isImageLoading && isDetecting && <span className="face-image-overlay-text">מזהה...</span>}
-                {!isDetecting && detectedFaces.length === 0 && modelsState === 'ready' && (
-                  <span className="face-image-overlay-text">לא זוהו פרצופים בתמונה</span>
-                )}
-                {detectedFaces.map((f, idx) => (
-                  <div
-                    key={idx}
-                    className={`face-box ${activeFaceIndex === idx ? 'active' : ''}`}
-                    style={{
-                      left: f.box.x,
-                      top: f.box.y,
-                      width: f.box.width,
-                      height: f.box.height
+              <div className="face-image-frame">
+                {imageSrc && (
+                  <img
+                    ref={imgRef}
+                    src={imageSrc}
+                    alt=""
+                    onError={() => {
+                      setImageError('טעינת תמונה נכשלה')
+                      setDetectedFaces([])
+                      setNameDrafts({})
                     }}
-                  >
-                    <span className="face-box-index">{idx + 1}</span>
-                  </div>
-                ))}
+                  />
+                )}
+                <div className="face-image-overlay">
+                  {isImageLoading && <span className="face-image-overlay-text">טוען תמונה</span>}
+                  {!isImageLoading && isDetecting && <span className="face-image-overlay-text">מזהה...</span>}
+                  {!isDetecting && detectedFaces.length === 0 && modelsState === 'ready' && (
+                    <span className="face-image-overlay-text">לא זוהו פרצופים בתמונה</span>
+                  )}
+                  {detectedFaces.map((f, idx) => (
+                    <div
+                      key={idx}
+                      className={`face-box ${activeFaceIndex === idx ? 'active' : ''}`}
+                      style={{
+                        left: f.box.x,
+                        top: f.box.y,
+                        width: f.box.width,
+                        height: f.box.height
+                      }}
+                    >
+                      <span className="face-box-index">{idx + 1}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

@@ -1,6 +1,15 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ancestorDirsOfFile, normalizePath } from './pathUtils'
+import { ancestorDirsOfFile, normalizePath, sanitizePathInput } from './pathUtils'
+
+describe('sanitizePathInput', () => {
+  it('removes RTL marks that would break path.resolve on Windows', () => {
+    expect(sanitizePathInput('\u200EC:\\test\\file.png')).toBe('C:\\test\\file.png')
+  })
+  it('removes BOM and normalizes NFC', () => {
+    expect(sanitizePathInput('\uFEFF  /tmp/x  ')).toBe('/tmp/x')
+  })
+})
 
 describe('normalizePath', () => {
   it('resolves relative segments', () => {

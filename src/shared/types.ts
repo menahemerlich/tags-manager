@@ -280,6 +280,19 @@ export interface WatermarkPreviewPayload {
   focusSeparation?: number
 }
 
+/** ייצוא קטע וידאו עם סימן מים (ללא כלי חיתוך/טשטוש על הפריים). */
+export interface WatermarkVideoExportPayload {
+  baseVideoPath: string
+  watermarkImagePath: string
+  x: number
+  y: number
+  width: number
+  height: number
+  opacity: number
+  startSec: number
+  endSec: number
+}
+
 export type WatermarkExportResult =
   | { ok: true; filePath: string }
   | { ok: false; cancelled?: true; error?: string }

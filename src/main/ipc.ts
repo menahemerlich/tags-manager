@@ -18,16 +18,21 @@ import type {
   TagImportApplyPayload,
   TransferPackageProgress,
   WatermarkExportPayload,
-  WatermarkPreviewPayload
+  WatermarkPreviewPayload,
+  WatermarkVideoExportPayload
 } from '../shared/types'
 import { checkGithubRelease } from './updates'
-import { normalizePath } from '../shared/pathUtils'
+import { normalizePath, sanitizePathInput, toWindowsShellPath } from '../shared/pathUtils'
 import { normalizeTagName } from '../shared/tagNormalize'
 import type { PathKind } from '../shared/types'
 import { analyzeImageWithOnnx } from './faceEngine'
 import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
 import { defaultWatermarkedFilePath, exportWatermarkedImage, renderWatermarkPreviewDataUrl } from './watermark'
+import { defaultWatermarkedVideoPath, exportWatermarkedVideoSegment } from './watermarkVideo'
 import { registerSupabaseSyncIpc } from './ipc/sync.ipc'
+import { registerMediaIpc } from './ipc/media.ipc'
+import { tryResolveMediaFsPath } from './services/media/resolveMediaFsPath'
+import { WATERMARK_IMAGE_EXPORT_BUSY, WATERMARK_VIDEO_EXPORT_PROGRESS } from '../shared/constants/ipc-channels'
 
 let indexAbort: AbortController | null = null
 
@@ -396,6 +401,7 @@ export function registerIpcHandlers(
   getWindow: () => BrowserWindow | null
 ): void {
   registerSupabaseSyncIpc(app, getDb, getWindow)
+  registerMediaIpc(app)
 
   const sendProgress = (wc: WebContents | undefined, payload: { done: number; total: number; currentPath: string }) => {
     wc?.send('index:progress', payload)
@@ -550,7 +556,8 @@ export function registerIpcHandlers(
 
   ipcMain.handle('faces:analyze-and-match-image', async (_e, imagePath: string) => {
     try {
-      const p = normalizePath(imagePath)
+      const s = sanitizePathInput(imagePath)
+      const p = tryResolveMediaFsPath(s) ?? normalizePath(s)
       const faces = await analyzeImageWithOnnx(p)
       const matches = getDb().matchFaceDescriptors(
         faces.map((f) => f.descriptor),
@@ -568,7 +575,8 @@ export function registerIpcHandlers(
 
   ipcMain.handle('faces:analyze-image', async (_e, imagePath: string) => {
     try {
-      const p = normalizePath(imagePath)
+      const s = sanitizePathInput(imagePath)
+      const p = tryResolveMediaFsPath(s) ?? normalizePath(s)
       const faces = await analyzeImageWithOnnx(p)
       return { ok: true as const, faces }
     } catch (e) {
@@ -753,11 +761,17 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('shell:show-in-folder', async (_e, filePath: string) => {
-    shell.showItemInFolder(normalizePath(filePath))
+    const s = sanitizePathInput(filePath)
+    if (!s) return
+    const fsPath = tryResolveMediaFsPath(s) ?? normalizePath(s)
+    shell.showItemInFolder(toWindowsShellPath(fsPath))
   })
 
   ipcMain.handle('shell:open-path', async (_e, filePath: string) => {
-    await shell.openPath(normalizePath(filePath))
+    const s = sanitizePathInput(filePath)
+    if (!s) return 'empty path'
+    const fsPath = tryResolveMediaFsPath(s) ?? normalizePath(s)
+    return await shell.openPath(toWindowsShellPath(fsPath))
   })
 
   ipcMain.handle('dialog:pick-files', async () => {
@@ -803,9 +817,27 @@ export function registerIpcHandlers(
     return r.filePaths[0] as string
   })
 
+  ipcMain.handle('dialog:pick-watermark-base', async () => {
+    const win = getWindow()
+    const r = await showOpenDialogForWindow(win, {
+      title: 'בחר תמונה או סרטון',
+      properties: ['openFile'],
+      filters: [
+        {
+          name: 'תמונה או וידאו',
+          extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v']
+        }
+      ]
+    })
+    if (r.canceled || r.filePaths.length === 0) return null
+    return r.filePaths[0] as string
+  })
+
   ipcMain.handle('files:image-data-url', async (_e, filePath: string) => {
     try {
-      const p = normalizePath(filePath)
+      const s = sanitizePathInput(filePath)
+      if (!s) return null
+      const p = tryResolveMediaFsPath(s) ?? normalizePath(s)
       const bytes = readFileSync(p)
       const mime = mimeFromFilePath(p)
       return `data:${mime};base64,${bytes.toString('base64')}`
@@ -816,19 +848,24 @@ export function registerIpcHandlers(
 
   ipcMain.handle('images:render-watermark-preview', async (_e, payload: WatermarkPreviewPayload) => {
     try {
+      const s = sanitizePathInput(payload.baseImagePath)
+      if (!s) return null
+      const baseImagePath = tryResolveMediaFsPath(s) ?? normalizePath(s)
       return await renderWatermarkPreviewDataUrl({
         ...payload,
-        baseImagePath: normalizePath(payload.baseImagePath)
+        baseImagePath
       })
     } catch {
       return null
     }
   })
 
-  ipcMain.handle('images:export-watermarked', async (_e, payload: WatermarkExportPayload) => {
+  ipcMain.handle('images:export-watermarked', async (event, payload: WatermarkExportPayload) => {
     const win = getWindow()
     try {
-      const baseImagePath = normalizePath(payload.baseImagePath)
+      const baseS = sanitizePathInput(payload.baseImagePath)
+      if (!baseS) return { ok: false as const, error: 'נתיב תמונה ראשית חסר' }
+      const baseImagePath = tryResolveMediaFsPath(baseS) ?? normalizePath(baseS)
       const saveRes = await showSaveDialogForWindow(win, {
         title: 'ייצוא תמונה עם סימן מים',
         defaultPath: defaultWatermarkedFilePath(baseImagePath),
@@ -839,13 +876,74 @@ export function registerIpcHandlers(
         ]
       })
       if (saveRes.canceled || !saveRes.filePath) return { ok: false as const, cancelled: true as const }
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(WATERMARK_IMAGE_EXPORT_BUSY, {
+          outputBaseName: basename(saveRes.filePath)
+        })
+      }
+      const wmRaw = sanitizePathInput(
+        typeof payload.watermarkImagePath === 'string' ? payload.watermarkImagePath : ''
+      )
+      const watermarkResolved =
+        isExternalImageRef(payload.watermarkImagePath) || !wmRaw
+          ? payload.watermarkImagePath
+          : tryResolveMediaFsPath(wmRaw) ?? normalizePath(wmRaw)
+
       await exportWatermarkedImage({
         ...payload,
         baseImagePath,
-        watermarkImagePath: isExternalImageRef(payload.watermarkImagePath)
-          ? payload.watermarkImagePath
-          : normalizePath(payload.watermarkImagePath),
+        watermarkImagePath: watermarkResolved,
         outputPath: normalizePath(saveRes.filePath)
+      })
+      return { ok: true as const, filePath: saveRes.filePath }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
+  ipcMain.handle('videos:export-watermarked', async (event, payload: WatermarkVideoExportPayload) => {
+    const win = getWindow()
+    try {
+      const baseS = sanitizePathInput(payload.baseVideoPath)
+      if (!baseS) return { ok: false as const, error: 'נתיב וידאו חסר' }
+      const baseVideoPath = tryResolveMediaFsPath(baseS) ?? normalizePath(baseS)
+      const wmRaw = sanitizePathInput(
+        typeof payload.watermarkImagePath === 'string' ? payload.watermarkImagePath : ''
+      )
+      const watermarkResolved =
+        isExternalImageRef(payload.watermarkImagePath) || !wmRaw
+          ? payload.watermarkImagePath
+          : tryResolveMediaFsPath(wmRaw) ?? normalizePath(wmRaw)
+
+      const saveRes = await showSaveDialogForWindow(win, {
+        title: 'שמירת סרט עם סימן מים',
+        defaultPath: defaultWatermarkedVideoPath(baseVideoPath),
+        filters: [{ name: 'MP4', extensions: ['mp4'] }]
+      })
+      if (saveRes.canceled || !saveRes.filePath) return { ok: false as const, cancelled: true as const }
+
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(WATERMARK_VIDEO_EXPORT_PROGRESS, {
+          percent: 0,
+          outputBaseName: basename(saveRes.filePath)
+        })
+      }
+
+      await exportWatermarkedVideoSegment(app, {
+        baseVideoPath,
+        watermarkImagePath: typeof watermarkResolved === 'string' ? watermarkResolved : wmRaw,
+        outputPath: normalizePath(saveRes.filePath),
+        x: payload.x,
+        y: payload.y,
+        width: payload.width,
+        height: payload.height,
+        opacity: payload.opacity,
+        startSec: payload.startSec,
+        endSec: payload.endSec,
+        onProgress: ({ percent }) => {
+          if (event.sender.isDestroyed()) return
+          event.sender.send(WATERMARK_VIDEO_EXPORT_PROGRESS, { percent })
+        }
       })
       return { ok: true as const, filePath: saveRes.filePath }
     } catch (e) {
