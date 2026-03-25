@@ -10,7 +10,7 @@ import type {
   TransferPackageProgress,
   TagFolderRow,
   TagImportPreview,
-  TagRow
+  TagRow,
 } from '../../shared/types'
 import { FACE_EMBEDDING_MODEL_ID } from '../../shared/types'
 import { normalizeTagName } from '../../shared/tagNormalize'
@@ -22,8 +22,9 @@ import {
 } from './blurProcessor'
 import * as faceapi from 'face-api.js'
 import '@tensorflow/tfjs-backend-cpu'
+import SyncPage from './pages/Sync/SyncPage'
 
-type Tab = 'library' | 'search' | 'tags' | 'settings'
+type Tab = 'library' | 'search' | 'tags' | 'settings' | 'cloud-sync'
 
 type FaceTab = 'faces' | 'watermark'
 
@@ -749,6 +750,7 @@ export default function App() {
               ['tags', 'תגיות'],
               ['faces', 'זיהוי פנים'],
               ['watermark', 'סימן מים'],
+              ['cloud-sync', 'סנכרון ענן'],
               ['settings', 'הגדרות']
             ] as const
           ).map(([id, label]) => (
@@ -1366,6 +1368,8 @@ export default function App() {
             <WatermarkEditorTab />
           </section>
         )}
+
+        {tab === 'cloud-sync' && <SyncPage />}
 
         {tab === 'settings' && (
           <section className="panel">
