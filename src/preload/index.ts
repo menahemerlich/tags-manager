@@ -10,9 +10,15 @@ import {
   SYNC_RESET_STATE,
   SYNC_RESOLVE_CONFLICTS,
   SYNC_STATUS,
-  SYNC_TEST_CONNECTION
+  SYNC_TEST_CONNECTION,
+  MEDIA_EXPLAIN_PATH,
+  MEDIA_GET_MEDIA_URL,
+  MEDIA_GET_THUMBNAIL,
+  WATERMARK_IMAGE_EXPORT_BUSY,
+  WATERMARK_VIDEO_EXPORT_PROGRESS
 } from '../shared/constants/ipc-channels'
 import type { ConflictListPayload, SyncCheckResult, SyncProgressPayload, SyncSummary } from '../shared/types/sync.types'
+import type { MediaPathDiagnostics } from '../shared/api'
 import type {
   PathKind,
   SearchResult,
@@ -35,7 +41,8 @@ import type {
   ImportUserDataResult,
   WatermarkExportPayload,
   WatermarkPreviewPayload,
-  WatermarkExportResult
+  WatermarkExportResult,
+  WatermarkVideoExportPayload
 } from '../shared/types'
 
 const api = {
@@ -127,11 +134,25 @@ const api = {
   pickFolders: () => ipcRenderer.invoke('dialog:pick-folders') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => ipcRenderer.invoke('dialog:pick-folder') as Promise<string | null>,
   pickImage: () => ipcRenderer.invoke('dialog:pick-image') as Promise<string | null>,
+  pickWatermarkBase: () => ipcRenderer.invoke('dialog:pick-watermark-base') as Promise<string | null>,
   getImageDataUrl: (filePath: string) => ipcRenderer.invoke('files:image-data-url', filePath) as Promise<string | null>,
   renderWatermarkPreview: (payload: WatermarkPreviewPayload) =>
     ipcRenderer.invoke('images:render-watermark-preview', payload) as Promise<string | null>,
   exportWatermarkedImage: (payload: WatermarkExportPayload) =>
     ipcRenderer.invoke('images:export-watermarked', payload) as Promise<WatermarkExportResult>,
+  exportWatermarkedVideo: (payload: WatermarkVideoExportPayload) =>
+    ipcRenderer.invoke('videos:export-watermarked', payload) as Promise<WatermarkExportResult>,
+  onWatermarkVideoExportProgress: (cb: (p: { percent: number; outputBaseName?: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { percent: number; outputBaseName?: string }) =>
+      cb(payload)
+    ipcRenderer.on(WATERMARK_VIDEO_EXPORT_PROGRESS, handler)
+    return () => ipcRenderer.removeListener(WATERMARK_VIDEO_EXPORT_PROGRESS, handler)
+  },
+  onWatermarkImageExportBusy: (cb: (p: { outputBaseName: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { outputBaseName: string }) => cb(payload)
+    ipcRenderer.on(WATERMARK_IMAGE_EXPORT_BUSY, handler)
+    return () => ipcRenderer.removeListener(WATERMARK_IMAGE_EXPORT_BUSY, handler)
+  },
   showInFolder: (filePath: string) => ipcRenderer.invoke('shell:show-in-folder', filePath) as Promise<void>,
   openPath: (filePath: string) => ipcRenderer.invoke('shell:open-path', filePath) as Promise<string>,
   supabaseSyncCheck: () => ipcRenderer.invoke(SYNC_CHECK) as Promise<SyncCheckResult>,
@@ -159,7 +180,12 @@ const api = {
     const handler = (_: Electron.IpcRendererEvent, payload: SyncProgressPayload) => cb(payload)
     ipcRenderer.on(SYNC_PROGRESS, handler)
     return () => ipcRenderer.removeListener(SYNC_PROGRESS, handler)
-  }
+  },
+  getThumbnail: (filePath: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke(MEDIA_GET_THUMBNAIL, filePath, opts) as Promise<string>,
+  getMediaUrl: (filePath: string) => ipcRenderer.invoke(MEDIA_GET_MEDIA_URL, filePath) as Promise<string>,
+  explainMediaPath: (filePath: string) =>
+    ipcRenderer.invoke(MEDIA_EXPLAIN_PATH, filePath) as Promise<MediaPathDiagnostics>
 }
 
 contextBridge.exposeInMainWorld('api', api)

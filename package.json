@@ -16,8 +16,12 @@
     "@supabase/supabase-js": "^2.100.0",
     "@tensorflow/tfjs-backend-cpu": "^4.22.0",
     "face-api.js": "^0.22.2",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "fluent-ffmpeg": "^2.1.3",
     "jimp": "^1.6.0",
     "onnxruntime-node": "^1.24.3",
+    "react-virtuoso": "^4.18.3",
     "semver": "^7.6.3",
     "sql.js": "^1.12.0"
   },
@@ -46,13 +50,23 @@
     "files": [
       "out/**/*",
       "build/icon.png",
-      "resources/models/face/**/*"
+      "resources/models/face/**/*",
+      "resources/ffmpeg/**/*"
     ],
     "asar": true,
+    "extraResources": [
+      {
+        "from": "resources/ffmpeg",
+        "to": "ffmpeg"
+      }
+    ],
     "asarUnpack": [
       "**/node_modules/sql.js/dist/**",
       "**/node_modules/onnxruntime-node/bin/**",
-      "resources/models/face/**"
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/ffprobe-static/**",
+      "resources/models/face/**",
+      "resources/ffmpeg/**"
     ],
     "win": {
       "target": [

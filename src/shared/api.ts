@@ -21,9 +21,19 @@ import type {
   ImportUserDataResult,
   WatermarkExportPayload,
   WatermarkPreviewPayload,
-  WatermarkExportResult
+  WatermarkExportResult,
+  WatermarkVideoExportPayload
 } from './types'
 import type { ConflictListPayload, SyncCheckResult, SyncProgressPayload, SyncSummary } from './types/sync.types'
+
+/** Debug payload: how main process interprets a file path (IPC / fs). */
+export interface MediaPathDiagnostics {
+  receivedLength: number
+  leadingCodePoints: { cp: number; char: string }[]
+  sanitized: string
+  normalizedLikeOpenButton: string
+  resolvedExistingPath: string | null
+}
 
 /** Shape of `window.api` exposed from preload (for renderer typing). */
 export interface ElectronApi {
@@ -73,9 +83,13 @@ export interface ElectronApi {
   pickFolders: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => Promise<string | null>,
   pickImage: () => Promise<string | null>,
+  pickWatermarkBase: () => Promise<string | null>,
   getImageDataUrl: (filePath: string) => Promise<string | null>,
   renderWatermarkPreview: (payload: WatermarkPreviewPayload) => Promise<string | null>,
   exportWatermarkedImage: (payload: WatermarkExportPayload) => Promise<WatermarkExportResult>,
+  exportWatermarkedVideo: (payload: WatermarkVideoExportPayload) => Promise<WatermarkExportResult>,
+  onWatermarkVideoExportProgress: (cb: (p: { percent: number; outputBaseName?: string }) => void) => () => void,
+  onWatermarkImageExportBusy: (cb: (p: { outputBaseName: string }) => void) => () => void,
   showInFolder: (filePath: string) => Promise<void>
   openPath: (filePath: string) => Promise<string>
   supabaseSyncCheck: () => Promise<SyncCheckResult>
@@ -95,4 +109,8 @@ export interface ElectronApi {
   }>
   supabaseSyncReadMigrationSql: () => Promise<{ ok: boolean; sql?: string; error?: string }>
   onSupabaseSyncProgress: (cb: (p: SyncProgressPayload) => void) => () => void
+  getThumbnail: (filePath: string, opts?: { force?: boolean }) => Promise<string>
+  getMediaUrl: (filePath: string) => Promise<string>
+  /** For debugging "file not found" vs working Open button — same normalization as media + open. */
+  explainMediaPath: (filePath: string) => Promise<MediaPathDiagnostics>
 }

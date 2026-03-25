@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { TagDatabase } from './database'
 import { registerIpcHandlers } from './ipc'
+import { registerLocalResourceProtocol } from './protocol/localResourceProtocol'
 
 let mainWindow: BrowserWindow | null = null
 let db: TagDatabase | null = null
@@ -40,6 +41,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  registerLocalResourceProtocol(app)
   const dbPath = join(app.getPath('userData'), 'tags-manager.sqlite')
   db = await TagDatabase.open(dbPath)
   registerIpcHandlers(
