@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Jimp } from 'jimp'
+import type { WatermarkTextOverlayPayload } from '../shared/types'
 
 type JimpImage = Awaited<ReturnType<typeof Jimp.read>>
 
@@ -24,6 +25,7 @@ export interface WatermarkCompositeOptions {
   blurStrength?: number
   blurFeather?: number
   focusSeparation?: number
+  textOverlay?: WatermarkTextOverlayPayload
 }
 
 export interface WatermarkPreviewOptions {
@@ -352,6 +354,28 @@ export async function exportWatermarkedImage(options: WatermarkCompositeOptions)
   const y = clamp(Math.round(options.y) - offsetY, 0, maxY)
 
   finalBase.composite(prepared, x, y)
+
+  const textOv = options.textOverlay
+  if (
+    textOv &&
+    typeof textOv.dataUrl === 'string' &&
+    textOv.dataUrl.startsWith('data:image/') &&
+    typeof textOv.width === 'number' &&
+    typeof textOv.height === 'number' &&
+    textOv.width > 0 &&
+    textOv.height > 0
+  ) {
+    const textLayer = await readImageSource(textOv.dataUrl)
+    const tw = Math.max(1, Math.round(textOv.width))
+    const th = Math.max(1, Math.round(textOv.height))
+    const preparedText = textLayer.clone().resize({ w: tw, h: th })
+    const maxTx = Math.max(0, finalBase.bitmap.width - preparedText.bitmap.width)
+    const maxTy = Math.max(0, finalBase.bitmap.height - preparedText.bitmap.height)
+    const tx = clamp(Math.round(textOv.x) - offsetX, 0, maxTx)
+    const ty = clamp(Math.round(textOv.y) - offsetY, 0, maxTy)
+    finalBase.composite(preparedText, tx, ty)
+  }
+
   await finalBase.write(options.outputPath as `${string}.${string}`)
 }
 

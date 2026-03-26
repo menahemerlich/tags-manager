@@ -1148,8 +1148,116 @@ tr.selected td {
 
 .watermark-tool-icons-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.45rem;
+}
+
+.watermark-tool-letter-icon {
+  font-weight: 800;
+  font-size: 1.05rem;
+  line-height: 1;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.watermark-text-overlay-item {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  border: 2px dashed rgba(103, 232, 249, 0.85);
+  border-radius: 8px;
+  background: rgba(8, 12, 22, 0.25);
+  cursor: move;
+  overflow: hidden;
+  padding: 4px;
+}
+
+.watermark-text-overlay-inner {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+}
+
+.watermark-text-toolbar {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(0, 212, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(8, 12, 22, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: 100%;
+  max-width: 100%;
+}
+
+.watermark-text-toolbar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.watermark-text-toolbar-row.watermark-text-toolbar-controls {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+}
+
+.watermark-text-toolbar-label {
+  font-size: 0.78rem;
+  color: var(--muted, #94a3b8);
+}
+
+.watermark-text-toolbar-label.tight {
+  margin-inline-end: -0.2rem;
+}
+
+.watermark-text-toolbar-textarea {
+  width: 100%;
+  min-height: 2.6rem;
+  resize: vertical;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+}
+
+.watermark-text-toolbar-controls input[type='color'] {
+  width: 2rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+.watermark-text-toolbar-controls input[type='range'] {
+  width: 88px;
+  vertical-align: middle;
+}
+
+.watermark-text-toolbar-num {
+  font-size: 0.78rem;
+  color: var(--muted, #94a3b8);
+  min-width: 2.5rem;
+}
+
+.watermark-text-toolbar-controls select {
+  min-width: 7rem;
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: inherit;
+}
+
+.watermark-text-style-btn {
+  min-width: 2.25rem;
+  padding: 0.25rem 0.45rem;
 }
 
 .watermark-tool-icon-btn {

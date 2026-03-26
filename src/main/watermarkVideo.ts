@@ -6,6 +6,7 @@ import type { App } from 'electron'
 import ffmpeg from 'fluent-ffmpeg'
 import { Jimp } from 'jimp'
 import { locateMediaTools } from './services/media/ffmpegLocator'
+import type { WatermarkTextOverlayPayload } from '../shared/types'
 
 export interface WatermarkVideoExportOptions {
   baseVideoPath: string
@@ -18,6 +19,7 @@ export interface WatermarkVideoExportOptions {
   opacity: number
   startSec: number
   endSec: number
+  textOverlay?: WatermarkTextOverlayPayload
   onProgress?: (info: { percent: number }) => void
 }
 
@@ -69,14 +71,48 @@ export async function exportWatermarkedVideoSegment(app: App, opts: WatermarkVid
   const tmpPng = join(tmpdir(), `tags-wm-v-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
   writeFileSync(tmpPng, await prepared.getBuffer('image/png'))
 
+  const textOv = opts.textOverlay
+  let tmpTextPng: string | null = null
+  let textW = 0
+  let textH = 0
+  let txi = 0
+  let tyi = 0
+  if (
+    textOv &&
+    typeof textOv.dataUrl === 'string' &&
+    textOv.dataUrl.startsWith('data:image/') &&
+    typeof textOv.width === 'number' &&
+    typeof textOv.height === 'number' &&
+    textOv.width > 0 &&
+    textOv.height > 0
+  ) {
+    try {
+      const b64 = textOv.dataUrl.split(',')[1] ?? ''
+      const textImg = await Jimp.read(Buffer.from(b64, 'base64'))
+      textW = Math.max(1, Math.round(textOv.width))
+      textH = Math.max(1, Math.round(textOv.height))
+      const textPrepared = textImg.clone().resize({ w: textW, h: textH })
+      tmpTextPng = join(tmpdir(), `tags-wm-txt-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+      writeFileSync(tmpTextPng, await textPrepared.getBuffer('image/png'))
+      txi = Math.round(textOv.x)
+      tyi = Math.round(textOv.y)
+    } catch {
+      tmpTextPng = null
+    }
+  }
+
   try {
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(opts.baseVideoPath)
-        .inputOptions(['-ss', String(start), '-to', String(end)])
-        .input(tmpPng)
-        .complexFilter(
-          `[1:v]scale=${tw}:${th}[wm];[0:v][wm]overlay=${xi}:${yi}:format=auto[outv]`
-        )
+      const chain = ffmpeg(opts.baseVideoPath).inputOptions(['-ss', String(start), '-to', String(end)]).input(tmpPng)
+      let filter: string
+      if (tmpTextPng) {
+        chain.input(tmpTextPng)
+        filter = `[1:v]scale=${tw}:${th}[wm];[0:v][wm]overlay=${xi}:${yi}:format=auto[v1];[2:v]scale=${textW}:${textH}[tx];[v1][tx]overlay=${txi}:${tyi}:format=auto[outv]`
+      } else {
+        filter = `[1:v]scale=${tw}:${th}[wm];[0:v][wm]overlay=${xi}:${yi}:format=auto[outv]`
+      }
+      chain
+        .complexFilter(filter)
         .outputOptions([
           '-map',
           '[outv]',
@@ -125,6 +161,13 @@ export async function exportWatermarkedVideoSegment(app: App, opts: WatermarkVid
       unlinkSync(tmpPng)
     } catch {
       // ignore
+    }
+    if (tmpTextPng) {
+      try {
+        unlinkSync(tmpTextPng)
+      } catch {
+        // ignore
+      }
     }
   }
 }
