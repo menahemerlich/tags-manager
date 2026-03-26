@@ -34,8 +34,23 @@ It stores everything locally in a SQLite database and supports **manual Cloud Sy
 ### Transfer to another computer
 - Package an installer + user data files to move the app to another machine.
 
-### Updates
-- Optional GitHub repo setting for update checking.
+### Updates (electron-updater)
+
+Updates use **electron-updater** only. The feed is fixed at **build time** from [`package.json`](package.json) → `build.publish` (GitHub `owner` / `repo`). There is no per-user repo setting in the app.
+
+#### In the app (packaged install)
+- **Settings → עדכונים**: shows the current version and **בדוק עדכונים**. After a silent background check (~10s after launch), if an update exists you get a confirmation dialog before download; progress appears in Settings; when the download finishes you can restart to install or install on next quit.
+- **Development** (`npm run dev`): the UI explains that updates apply only to the installed app.
+
+#### Release workflow (maintainers)
+1. Bump `"version"` in [`package.json`](package.json) (semver). This becomes `app.getVersion()` in packaged builds.
+2. Ensure `build.publish` points at the GitHub repo where you will publish releases (change `owner`/`repo` if you use a fork).
+3. Run `npm run build`. Output is under `release/`.
+4. On GitHub: create a **Release** with a semver **tag** (e.g. `v1.0.1`).
+5. Attach from `release/`: the **NSIS `.exe`**, **`latest.yml`**, and **`*.exe.blockmap`** if generated. **Without `latest.yml` on the release, auto-update will not work.**
+
+#### Diagnostics
+- Update-related errors are appended to **`<userData>/update-errors.log`** (last ~200 lines).
 
 ## Data storage
 

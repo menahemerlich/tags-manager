@@ -1,6 +1,6 @@
 {
   "name": "tags-manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Tag-based file and folder manager",
   "main": "out/main/index.js",
   "type": "module",
@@ -23,7 +23,8 @@
     "onnxruntime-node": "^1.24.3",
     "react-virtuoso": "^4.18.3",
     "semver": "^7.6.3",
-    "sql.js": "^1.12.0"
+    "sql.js": "^1.12.0",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -42,7 +43,7 @@
   },
   "build": {
     "appId": "com.tagsmanager.app",
-    "productName": "ניהול ארכיון",
+    "productName": "Tags Manager",
     "icon": "build/icon.png",
     "directories": {
       "output": "release"
@@ -69,6 +70,7 @@
       "resources/ffmpeg/**"
     ],
     "win": {
+      "artifactName": "${name}-setup-${version}.${ext}",
       "target": [
         "nsis"
       ]
@@ -76,6 +78,13 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "menahemerlich",
+        "repo": "tags-manager"
+      }
+    ]
   }
 }

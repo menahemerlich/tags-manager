@@ -21,3 +21,14 @@ export const WATERMARK_VIDEO_EXPORT_PROGRESS = 'videos:export-watermarked-progre
 
 /** Watermark image export started after save dialog (main → renderer). */
 export const WATERMARK_IMAGE_EXPORT_BUSY = 'images:export-watermarked-busy' as const
+
+/** In-app updates (electron-updater): invoke from renderer. */
+export const UPDATE_CHECK = 'update:manual-check' as const
+export const UPDATE_GET_VERSION = 'update:get-version' as const
+export const UPDATE_GET_STATUS = 'update:get-status' as const
+
+/** Main → renderer: progress, manual check results, download state. */
+export const UPDATE_FEED = 'update:feed' as const
+
+/** Reload tags-manager.sqlite from disk (after manual file copy to userData). */
+export const DATA_RELOAD_USER_DATA = 'data:reload-user-data' as const

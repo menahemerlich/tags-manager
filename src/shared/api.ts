@@ -8,7 +8,6 @@ import type {
   TagImportPreview,
   TagRow,
   TagFolderRow,
-  UpdateCheckResult,
   FaceAddEmbeddingPayload,
   FaceDetection,
   FacePersonEmbeddings,
@@ -25,6 +24,7 @@ import type {
   WatermarkVideoExportPayload
 } from './types'
 import type { ConflictListPayload, SyncCheckResult, SyncProgressPayload, SyncSummary } from './types/sync.types'
+import type { UpdateFeedMessage } from './types/update.types'
 
 /** Debug payload: how main process interprets a file path (IPC / fs). */
 export interface MediaPathDiagnostics {
@@ -59,7 +59,10 @@ export interface ElectronApi {
   getSettings: () => Promise<AppSettings>
   setSettings: (s: AppSettings) => Promise<{ ok: true }>
   packageAppForTransfer: (options: PackageAppForTransferOptions) => Promise<PackageAppForTransferResult>
-  checkUpdates: () => Promise<UpdateCheckResult>
+  getUpdateStatus: () => Promise<{ version: string; isPackaged: boolean }>
+  checkForUpdatesManual: () =>
+    Promise<{ ok: true } | { ok: false; reason: 'dev' | 'no-service' } | { ok: false; error: string }>
+  onUpdateFeed: (cb: (msg: UpdateFeedMessage) => void) => () => void
   exportTagsJson: (scopePath: string) => Promise<{ ok: true; filePath: string; exportedCount: number } | { ok: false; cancelled?: true; error?: string }>
   importTagsPreview: (scopePath: string) => Promise<{ ok: true; preview: TagImportPreview } | { ok: false; cancelled?: true; error?: string }>
   importTagsApply: (
@@ -73,6 +76,8 @@ export interface ElectronApi {
   replaceFaceEmbedding: (payload: FaceReplaceEmbeddingPayload) => Promise<{ ok: true } | { ok: false; error: string }>
   getAppVersion: () => Promise<string>
   openAppUserDataDir: () => Promise<string>
+  /** Reload SQLite DB from disk (e.g. after copying tags-manager.sqlite to userData). */
+  reloadUserData: () => Promise<{ ok: true } | { ok: false; error: string }>
   importUserDataFromBackup: () => Promise<ImportUserDataResult>
   onIndexProgress: (
     cb: (p: { done: number; total: number; currentPath: string }) => void

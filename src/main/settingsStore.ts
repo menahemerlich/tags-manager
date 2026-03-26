@@ -4,7 +4,6 @@ import type { App } from 'electron'
 import type { AppSettings } from '../shared/types'
 
 const defaultSettings: AppSettings = {
-  githubRepo: '',
   sync: {}
 }
 
@@ -37,7 +36,6 @@ export function loadSettings(app: App): AppSettings {
     const raw = readFileSync(fp, 'utf-8')
     const parsed = JSON.parse(raw) as Partial<AppSettings>
     return {
-      githubRepo: typeof parsed.githubRepo === 'string' ? parsed.githubRepo : defaultSettings.githubRepo,
       sync: normalizeSyncSettings(parsed.sync)
     }
   } catch {
