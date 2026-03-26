@@ -14,6 +14,10 @@ import {
   MEDIA_EXPLAIN_PATH,
   MEDIA_GET_MEDIA_URL,
   MEDIA_GET_THUMBNAIL,
+  UPDATE_CHECK,
+  DATA_RELOAD_USER_DATA,
+  UPDATE_FEED,
+  UPDATE_GET_STATUS,
   WATERMARK_IMAGE_EXPORT_BUSY,
   WATERMARK_VIDEO_EXPORT_PROGRESS
 } from '../shared/constants/ipc-channels'
@@ -31,7 +35,6 @@ import type {
   FaceAddEmbeddingPayload,
   FaceDetection,
   FacePersonEmbeddings,
-  UpdateCheckResult,
   FaceAnalyzeAndMatchResponse,
   FaceAnalyzeAndMatchErrorResponse,
   FaceEmbeddingMetaRow,
@@ -44,6 +47,7 @@ import type {
   WatermarkExportResult,
   WatermarkVideoExportPayload
 } from '../shared/types'
+import type { UpdateFeedMessage } from '../shared/types/update.types'
 
 const api = {
   addItems: (items: { path: string; kind: PathKind }[], tagNames: string[]) =>
@@ -78,7 +82,17 @@ const api = {
   setSettings: (s: AppSettings) => ipcRenderer.invoke('settings:set', s) as Promise<{ ok: true }>,
   packageAppForTransfer: (options: PackageAppForTransferOptions) =>
     ipcRenderer.invoke('app:package-for-transfer', options) as Promise<PackageAppForTransferResult>,
-  checkUpdates: () => ipcRenderer.invoke('updates:check') as Promise<UpdateCheckResult>,
+  getUpdateStatus: () =>
+    ipcRenderer.invoke(UPDATE_GET_STATUS) as Promise<{ version: string; isPackaged: boolean }>,
+  checkForUpdatesManual: () =>
+    ipcRenderer.invoke(UPDATE_CHECK) as Promise<
+      { ok: true } | { ok: false; reason: 'dev' | 'no-service' } | { ok: false; error: string }
+    >,
+  onUpdateFeed: (cb: (msg: UpdateFeedMessage) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, msg: UpdateFeedMessage) => cb(msg)
+    ipcRenderer.on(UPDATE_FEED, handler)
+    return () => ipcRenderer.removeListener(UPDATE_FEED, handler)
+  },
   exportTagsJson: (scopePath: string) =>
     ipcRenderer.invoke('tags:export-json', scopePath) as Promise<
       { ok: true; filePath: string; exportedCount: number } | { ok: false; cancelled?: true; error?: string }
@@ -113,6 +127,8 @@ const api = {
     >,
   getAppVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
   openAppUserDataDir: () => ipcRenderer.invoke('app:open-user-data-dir') as Promise<string>,
+  reloadUserData: () =>
+    ipcRenderer.invoke(DATA_RELOAD_USER_DATA) as Promise<{ ok: true } | { ok: false; error: string }>,
   importUserDataFromBackup: () => ipcRenderer.invoke('app:import-user-data') as Promise<ImportUserDataResult>,
   onIndexProgress: (cb: (p: { done: number; total: number; currentPath: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { done: number; total: number; currentPath: string }) =>

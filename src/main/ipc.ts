@@ -21,7 +21,6 @@ import type {
   WatermarkPreviewPayload,
   WatermarkVideoExportPayload
 } from '../shared/types'
-import { checkGithubRelease } from './updates'
 import { normalizePath, sanitizePathInput, toWindowsShellPath } from '../shared/pathUtils'
 import { normalizeTagName } from '../shared/tagNormalize'
 import type { PathKind } from '../shared/types'
@@ -32,7 +31,12 @@ import { defaultWatermarkedVideoPath, exportWatermarkedVideoSegment } from './wa
 import { registerSupabaseSyncIpc } from './ipc/sync.ipc'
 import { registerMediaIpc } from './ipc/media.ipc'
 import { tryResolveMediaFsPath } from './services/media/resolveMediaFsPath'
-import { WATERMARK_IMAGE_EXPORT_BUSY, WATERMARK_VIDEO_EXPORT_PROGRESS } from '../shared/constants/ipc-channels'
+import {
+  DATA_RELOAD_USER_DATA,
+  WATERMARK_IMAGE_EXPORT_BUSY,
+  WATERMARK_VIDEO_EXPORT_PROGRESS
+} from '../shared/constants/ipc-channels'
+import { registerUpdateIpc } from './ipc/update.ipc'
 
 let indexAbort: AbortController | null = null
 
@@ -402,6 +406,7 @@ export function registerIpcHandlers(
 ): void {
   registerSupabaseSyncIpc(app, getDb, getWindow)
   registerMediaIpc(app)
+  registerUpdateIpc(app, getWindow)
 
   const sendProgress = (wc: WebContents | undefined, payload: { done: number; total: number; currentPath: string }) => {
     wc?.send('index:progress', payload)
@@ -681,7 +686,6 @@ export function registerIpcHandlers(
   ipcMain.handle('settings:set', async (_e, s: AppSettings) => {
     const current = loadSettings(app)
     saveSettings(app, {
-      githubRepo: s.githubRepo ?? '',
       sync: { ...current.sync, ...s.sync }
     })
     return { ok: true as const }
@@ -693,17 +697,18 @@ export function registerIpcHandlers(
     })
   })
 
-  ipcMain.handle('updates:check', async () => {
-    const settings = loadSettings(app)
-    const parts = settings.githubRepo.split('/').map((x) => x.trim())
-    if (parts.length !== 2) {
-      return checkGithubRelease(app, '', '')
-    }
-    return checkGithubRelease(app, parts[0], parts[1])
-  })
-
   ipcMain.handle('app:get-version', async () => {
     return app.getVersion()
+  })
+
+  ipcMain.handle(DATA_RELOAD_USER_DATA, async () => {
+    try {
+      await getDb().reloadFromDisk()
+      return { ok: true as const }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { ok: false as const, error: msg }
+    }
   })
 
   ipcMain.handle('app:open-user-data-dir', async () => {

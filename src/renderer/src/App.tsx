@@ -24,6 +24,7 @@ import {
 import * as faceapi from 'face-api.js'
 import '@tensorflow/tfjs-backend-cpu'
 import SyncPage from './pages/Sync/SyncPage'
+import UpdateSection from './pages/Settings/UpdateSection'
 import { FilePreview } from './components/FilePreview'
 import { TableVirtuoso } from 'react-virtuoso'
 
@@ -244,10 +245,8 @@ export default function App() {
   const [selectedSearchPath, setSelectedSearchPath] = useState<string | null>(null)
   const [selectedSearchDirectTags, setSelectedSearchDirectTags] = useState<string[]>([])
   const [searchFileTagDraft, setSearchFileTagDraft] = useState('')
-  const [settingsRepo, setSettingsRepo] = useState('')
   const [settingsView, setSettingsView] = useState<'updates' | 'io' | 'transfer' | 'about'>('updates')
   const [appVersion, setAppVersion] = useState('')
-  const [updateMsg, setUpdateMsg] = useState<string | null>(null)
   const [transferMsg, setTransferMsg] = useState<string | null>(null)
   const [transferRevealPath, setTransferRevealPath] = useState<string | null>(null)
   const [isPackagingTransfer, setIsPackagingTransfer] = useState(false)
@@ -281,7 +280,6 @@ export default function App() {
     void refreshTags()
     void refreshTagFolders()
     void window.api.getAppVersion().then(setAppVersion)
-    void window.api.getSettings().then((s) => setSettingsRepo(s.githubRepo))
   }, [refreshTagFolders, refreshTags])
 
   useEffect(() => {
@@ -494,6 +492,16 @@ export default function App() {
     void runSearch()
   }, [runSearch, tags])
 
+  useEffect(() => {
+    const onUserDataReloaded = () => {
+      void refreshTags()
+      void refreshTagFolders()
+      void runSearch()
+    }
+    window.addEventListener('tags-manager:user-data-reloaded', onUserDataReloaded)
+    return () => window.removeEventListener('tags-manager:user-data-reloaded', onUserDataReloaded)
+  }, [refreshTagFolders, refreshTags, runSearch])
+
   const searchResultsFiltered = useMemo(() => {
     if (!searchScope) return searchResults
     const base = searchScope.replace(/[/\\]+$/, '')
@@ -669,29 +677,6 @@ export default function App() {
       return
     }
     await refreshTagFolders()
-  }
-
-  async function saveSettings() {
-    setError(null)
-    await window.api.setSettings({ githubRepo: settingsRepo.trim() })
-    setUpdateMsg('ההגדרות נשמרו.')
-    setTimeout(() => setUpdateMsg(null), 2000)
-  }
-
-  async function checkUpdates() {
-    setError(null)
-    setUpdateMsg(null)
-    const r = await window.api.checkUpdates()
-    if (r.error) {
-      setError(r.error)
-      return
-    }
-    if (r.isNewer && r.latestVersion && r.releaseUrl) {
-      setUpdateMsg(`קיימת גרסה חדשה: ${r.latestVersion} (מותקן: ${r.currentVersion})`)
-      window.open(r.releaseUrl, '_blank')
-    } else {
-      setUpdateMsg(`אין עדכון — הגרסה המותקנת היא העדכנית (${r.currentVersion}).`)
-    }
   }
 
   async function handlePackageForTransfer(rebuildInstaller: boolean) {
@@ -1580,37 +1565,7 @@ export default function App() {
               </button>
             </div>
 
-            {settingsView === 'updates' && (
-              <>
-                <div className="field">
-                  <label htmlFor="gh-repo">מאגר GitHub לעדכונים (בעלים/שם)</label>
-                  <input
-                    id="gh-repo"
-                    value={settingsRepo}
-                    onChange={(e) => setSettingsRepo(e.target.value)}
-                    placeholder="למשל: user/tags-manager"
-                  />
-                </div>
-                <div className="toolbar">
-                  <button type="button" className="btn primary" onClick={() => void saveSettings()}>
-                    שמור הגדרות
-                  </button>
-                  <button type="button" className="btn" onClick={() => void checkUpdates()}>
-                    בדוק עדכונים
-                  </button>
-                </div>
-                {updateMsg && <p className="muted">{updateMsg}</p>}
-                <p className="muted small" style={{ marginTop: '0.75rem' }}>
-                  הבדיקה משתמשת ב־API הציבורי של GitHub לגרסה האחרונה. אם יש גרסה חדשה (לפי מספור semver),
-                  ייפתח דף השחרור בדפדפן.
-                </p>
-                <p className="muted small" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-                  <strong>כוננים חיצוניים:</strong> הנתיבים נשמרים כמוחלטים (כולל אות כונן). אם דיסק USB מקבל אות
-                  אחר, ייתכן שתצטרכו לבחור מחדש או להוסיף שוב את התיקיות — תכונה להחלפת נתיב גלובלית תתווסף
-                  בעתיד אם יידרש.
-                </p>
-              </>
-            )}
+            {settingsView === 'updates' && <UpdateSection />}
 
             {settingsView === 'io' && (
               <>

@@ -1,5 +1,4 @@
 export interface AppSettings {
-  githubRepo: string
   sync?: SyncSettings
 }
 
@@ -100,14 +99,6 @@ export interface SearchResultRow {
 export interface SearchResult {
   rows: SearchResultRow[]
   truncated?: boolean
-}
-
-export interface UpdateCheckResult {
-  currentVersion: string
-  latestVersion: string | null
-  releaseUrl: string | null
-  isNewer: boolean
-  error?: string
 }
 
 export interface IndexProgress {
