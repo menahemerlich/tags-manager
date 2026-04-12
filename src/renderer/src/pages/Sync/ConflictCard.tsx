@@ -2,6 +2,7 @@ import type { ConflictRecord } from '../../../../shared/types/sync.types'
 
 type Choice = 'keep-mine' | 'use-cloud'
 
+/** כרטיס קונפליקט יחיד בסנכרון — השוואת גרסאות ובחירת מקור */
 export function ConflictCard(props: {
   conflict: ConflictRecord
   choice: Choice | null

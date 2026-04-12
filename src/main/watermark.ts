@@ -30,7 +30,10 @@ export interface WatermarkCompositeOptions {
 }
 
 export interface WatermarkPreviewOptions {
-  baseImagePath: string
+  /** נתיב קובץ; אופציונלי אם מועבר `baseImageDataUrl`. */
+  baseImagePath?: string
+  /** פיקסלים נוכחיים (למשל אחרי שמירת חיתוך/טשטוש קודם). */
+  baseImageDataUrl?: string
   toolMode?: 'none' | 'crop' | 'blur'
   selectionShape?: 'rect' | 'circle'
   selectionX?: number
@@ -429,8 +432,49 @@ export async function exportWatermarkedImage(options: WatermarkCompositeOptions)
   await finalBase.write(options.outputPath as `${string}.${string}`)
 }
 
+/** יישום חיתוך או טשטוש ברזולוציה מלאה (ללא הקטנה לתצוגה) והחזרת Data URL — לשמירת שינויים בעורך. */
+export async function bakeWatermarkToolToDataUrl(options: WatermarkPreviewOptions): Promise<string> {
+  if (!options.baseImageDataUrl && !options.baseImagePath) {
+    throw new Error('bakeWatermarkToolToDataUrl: baseImagePath or baseImageDataUrl required')
+  }
+  const base = options.baseImageDataUrl
+    ? await readImageSource(options.baseImageDataUrl)
+    : await Jimp.read(toReadableImagePath(options.baseImagePath!))
+  const toolMode = options.toolMode ?? 'none'
+  const selectionShape = options.selectionShape ?? 'rect'
+  const selection = getSelectionRect(options, base.bitmap.width, base.bitmap.height)
+  let finalBase = base.clone() as JimpImage
+
+  if (toolMode === 'crop' && selection) {
+    finalBase = base.clone().crop({
+      x: selection.x,
+      y: selection.y,
+      w: selection.width,
+      h: selection.height
+    }) as JimpImage
+    if (selectionShape === 'circle') {
+      applyCircleAlphaMask(finalBase, { x: 0, y: 0, width: selection.width, height: selection.height })
+    }
+  } else if (toolMode === 'blur' && selection) {
+    const blurAmount = getBlurStrengthRadius(options.blurStrength)
+    finalBase = createBlurredBackdrop(base, blurAmount, 1200)
+    const featherAmount = getBlurFeatherPixels(options.blurFeather, selection)
+    const separation = clamp(Math.round(options.focusSeparation ?? 45), 0, 100)
+    if (blurAmount <= 0) finalBase = base.clone() as JimpImage
+    applyBackgroundSeparation(finalBase, selection, selectionShape, featherAmount, options.blurFeather, separation)
+    copyFocusedArea(base, finalBase, selection, selectionShape, featherAmount, options.blurFeather)
+  } else {
+    throw new Error('bakeWatermarkToolToDataUrl: need crop or blur with a valid selection')
+  }
+
+  const buffer = await finalBase.getBuffer('image/png')
+  return `data:image/png;base64,${buffer.toString('base64')}`
+}
+
 export async function renderWatermarkPreviewDataUrl(options: WatermarkPreviewOptions): Promise<string> {
-  const originalBase = await Jimp.read(toReadableImagePath(options.baseImagePath))
+  const originalBase = options.baseImageDataUrl
+    ? await readImageSource(options.baseImageDataUrl)
+    : await Jimp.read(toReadableImagePath(options.baseImagePath!))
   const toolMode = options.toolMode ?? 'none'
   const selectionShape = options.selectionShape ?? 'rect'
   const previewScale = getPreviewScale(originalBase.bitmap.width, originalBase.bitmap.height)

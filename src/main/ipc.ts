@@ -17,6 +17,9 @@ import type {
   TagExportJson,
   TagImportApplyPayload,
   TransferPackageProgress,
+  VideoTrimSegmentPayload,
+  VideoTrimSegmentResult,
+  WatermarkBakeToolPayload,
   WatermarkExportPayload,
   WatermarkPreviewPayload,
   WatermarkVideoExportPayload
@@ -26,8 +29,17 @@ import { normalizeTagName } from '../shared/tagNormalize'
 import type { PathKind } from '../shared/types'
 import { analyzeImageWithOnnx } from './faceEngine'
 import { FACE_EMBEDDING_MODEL_ID } from '../shared/types'
-import { defaultWatermarkedFilePath, exportWatermarkedImage, renderWatermarkPreviewDataUrl } from './watermark'
-import { defaultWatermarkedVideoPath, exportWatermarkedVideoSegment } from './watermarkVideo'
+import {
+  bakeWatermarkToolToDataUrl,
+  defaultWatermarkedFilePath,
+  exportWatermarkedImage,
+  renderWatermarkPreviewDataUrl
+} from './watermark'
+import {
+  defaultWatermarkedVideoPath,
+  exportWatermarkedVideoSegment,
+  trimVideoSegmentToTempFile
+} from './watermarkVideo'
 import { registerSupabaseSyncIpc } from './ipc/sync.ipc'
 import { registerMediaIpc } from './ipc/media.ipc'
 import { tryResolveMediaFsPath } from './services/media/resolveMediaFsPath'
@@ -865,6 +877,25 @@ export function registerIpcHandlers(
     }
   })
 
+  ipcMain.handle('images:bake-watermark-tool', async (_e, payload: WatermarkBakeToolPayload) => {
+    try {
+      const dataUrl =
+        typeof payload.baseImageDataUrl === 'string' && payload.baseImageDataUrl.startsWith('data:image/')
+          ? payload.baseImageDataUrl
+          : undefined
+      const pathRaw = !dataUrl ? sanitizePathInput(payload.baseImagePath ?? '') : ''
+      if (!dataUrl && !pathRaw) return null
+      const baseImagePath = pathRaw ? tryResolveMediaFsPath(pathRaw) ?? normalizePath(pathRaw) : undefined
+      return await bakeWatermarkToolToDataUrl({
+        ...payload,
+        baseImagePath,
+        baseImageDataUrl: dataUrl
+      })
+    } catch {
+      return null
+    }
+  })
+
   ipcMain.handle('images:export-watermarked', async (event, payload: WatermarkExportPayload) => {
     const win = getWindow()
     try {
@@ -953,6 +984,18 @@ export function registerIpcHandlers(
         }
       })
       return { ok: true as const, filePath: saveRes.filePath }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
+  ipcMain.handle('videos:trim-segment', async (_e, payload: VideoTrimSegmentPayload): Promise<VideoTrimSegmentResult> => {
+    try {
+      const raw = sanitizePathInput(payload.inputPath)
+      if (!raw) return { ok: false as const, error: 'נתיב חסר' }
+      const inputPath = tryResolveMediaFsPath(raw) ?? normalizePath(raw)
+      const out = await trimVideoSegmentToTempFile(app, inputPath, payload.startSec, payload.endSec)
+      return { ok: true as const, outputPath: out }
     } catch (e) {
       return { ok: false as const, error: (e as Error).message || String(e) }
     }

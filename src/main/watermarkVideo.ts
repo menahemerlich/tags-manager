@@ -258,3 +258,52 @@ export function defaultWatermarkedVideoPath(baseVideoPath: string): string {
   const parsed = path.parse(baseVideoPath)
   return path.join(parsed.dir, `${parsed.name}-watermarked.mp4`)
 }
+
+/** חיתוך קטע וידאו לקובץ זמני (לעריכה אחרי שמירה). */
+export async function trimVideoSegmentToTempFile(app: App, inputPath: string, startSec: number, endSec: number): Promise<string> {
+  const tools = locateMediaTools(app)
+  if (!tools.ffmpeg) {
+    throw new Error('FFmpeg not available')
+  }
+  ffmpeg.setFfmpegPath(tools.ffmpeg)
+
+  const start = clamp(startSec, 0, 1e9)
+  const end = clamp(endSec, start + 0.001, 1e9)
+  const dur = end - start
+  const outPath = join(tmpdir(), `tags-wm-trim-${Date.now()}-${Math.random().toString(16).slice(2)}.mp4`)
+
+  await new Promise<void>((resolve, reject) => {
+    ffmpeg(inputPath)
+      .setStartTime(start)
+      .duration(dur)
+      .outputOptions([
+        '-map',
+        '0:v:0',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '23',
+        '-pix_fmt',
+        'yuv420p',
+        '-vf',
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
+        '-map',
+        '0:a?',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        '-movflags',
+        '+faststart',
+        '-avoid_negative_ts',
+        'make_zero'
+      ])
+      .on('end', () => resolve())
+      .on('error', (err: Error) => reject(err))
+      .save(outPath)
+  })
+
+  return outPath
+}

@@ -287,6 +287,21 @@ export interface WatermarkPreviewPayload {
   focusSeparation?: number
 }
 
+/** אפיון אחד: נתיב קובץ מקורי או Data URL של התמונה הנוכחית (אחרי שמירת חיתוך/טשטוש). */
+export interface WatermarkBakeToolPayload {
+  baseImagePath?: string
+  baseImageDataUrl?: string
+  toolMode: 'crop' | 'blur'
+  selectionShape?: SelectionShape
+  selectionX?: number
+  selectionY?: number
+  selectionWidth?: number
+  selectionHeight?: number
+  blurStrength?: number
+  blurFeather?: number
+  focusSeparation?: number
+}
+
 /** ייצוא קטע וידאו עם סימן מים (ללא כלי חיתוך/טשטוש על הפריים). */
 export interface WatermarkVideoExportPayload {
   baseVideoPath: string
@@ -305,3 +320,14 @@ export interface WatermarkVideoExportPayload {
 export type WatermarkExportResult =
   | { ok: true; filePath: string }
   | { ok: false; cancelled?: true; error?: string }
+
+/** חיתוך קטע וידאו לקובץ זמני (עורך סימן מים). */
+export interface VideoTrimSegmentPayload {
+  inputPath: string
+  startSec: number
+  endSec: number
+}
+
+export type VideoTrimSegmentResult =
+  | { ok: true; outputPath: string }
+  | { ok: false; error: string }
