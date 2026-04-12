@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { UpdateFeedMessage } from '../../../../shared/types/update.types'
 
+/** אזור הגדרות עדכוני אפליקציה (בדיקה, הורדה, התקנה) */
 export default function UpdateSection() {
   const [version, setVersion] = useState('')
   /** false until main reports — avoids enabling "Check" in dev before status loads. */

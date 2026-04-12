@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Jimp } from 'jimp'
+import type { WatermarkRasterOverlayPayload, WatermarkTextOverlayPayload } from '../shared/types'
 
 type JimpImage = Awaited<ReturnType<typeof Jimp.read>>
 
@@ -24,10 +25,15 @@ export interface WatermarkCompositeOptions {
   blurStrength?: number
   blurFeather?: number
   focusSeparation?: number
+  textOverlay?: WatermarkTextOverlayPayload
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
 }
 
 export interface WatermarkPreviewOptions {
-  baseImagePath: string
+  /** נתיב קובץ; אופציונלי אם מועבר `baseImageDataUrl`. */
+  baseImagePath?: string
+  /** פיקסלים נוכחיים (למשל אחרי שמירת חיתוך/טשטוש קודם). */
+  baseImageDataUrl?: string
   toolMode?: 'none' | 'crop' | 'blur'
   selectionShape?: 'rect' | 'circle'
   selectionX?: number
@@ -41,6 +47,27 @@ export interface WatermarkPreviewOptions {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+/** Composite text raster at (dstX, dstY) without shifting the layer; clip to destination bounds (WYSIWYG vs editor). */
+function compositeTextLayerClipped(dest: JimpImage, src: JimpImage, dstX: number, dstY: number): void {
+  const W = dest.bitmap.width
+  const H = dest.bitmap.height
+  const tw = src.bitmap.width
+  const th = src.bitmap.height
+  const dstXi = Math.round(dstX)
+  const dstYi = Math.round(dstY)
+  const clipLeft = Math.max(0, dstXi)
+  const clipTop = Math.max(0, dstYi)
+  const clipRight = Math.min(dstXi + tw, W)
+  const clipBottom = Math.min(dstYi + th, H)
+  const clipW = clipRight - clipLeft
+  const clipH = clipBottom - clipTop
+  if (clipW <= 0 || clipH <= 0) return
+  const srcX = clipLeft - dstXi
+  const srcY = clipTop - dstYi
+  const cropped = src.clone().crop({ x: srcX, y: srcY, w: clipW, h: clipH })
+  dest.composite(cropped, clipLeft, clipTop)
 }
 
 function applyFeatherSoftnessCurve(transition: number, softnessSlider: number | undefined): number {
@@ -352,11 +379,102 @@ export async function exportWatermarkedImage(options: WatermarkCompositeOptions)
   const y = clamp(Math.round(options.y) - offsetY, 0, maxY)
 
   finalBase.composite(prepared, x, y)
+
+  const textOv = options.textOverlay
+  if (
+    textOv &&
+    typeof textOv.dataUrl === 'string' &&
+    textOv.dataUrl.startsWith('data:image/') &&
+    typeof textOv.width === 'number' &&
+    typeof textOv.height === 'number' &&
+    textOv.width > 0 &&
+    textOv.height > 0
+  ) {
+    const textLayer = await readImageSource(textOv.dataUrl)
+    const tw = Math.max(1, Math.round(textOv.width))
+    const th = Math.max(1, Math.round(textOv.height))
+    const preparedText =
+      textLayer.bitmap.width === tw && textLayer.bitmap.height === th
+        ? (textLayer.clone() as JimpImage)
+        : (textLayer.clone().resize({ w: tw, h: th }) as JimpImage)
+    const tx0 = Math.round(textOv.x) - offsetX
+    const ty0 = Math.round(textOv.y) - offsetY
+    compositeTextLayerClipped(finalBase, preparedText, tx0, ty0)
+  }
+
+  const shapeOvs = options.shapeOverlays
+  if (Array.isArray(shapeOvs) && shapeOvs.length > 0) {
+    for (const sh of shapeOvs) {
+      if (
+        !sh ||
+        typeof sh.dataUrl !== 'string' ||
+        !sh.dataUrl.startsWith('data:image/') ||
+        typeof sh.width !== 'number' ||
+        typeof sh.height !== 'number' ||
+        sh.width <= 0 ||
+        sh.height <= 0
+      ) {
+        continue
+      }
+      const layer = await readImageSource(sh.dataUrl)
+      const sw = Math.max(1, Math.round(sh.width))
+      const shh = Math.max(1, Math.round(sh.height))
+      const preparedShape =
+        layer.bitmap.width === sw && layer.bitmap.height === shh
+          ? (layer.clone() as JimpImage)
+          : (layer.clone().resize({ w: sw, h: shh }) as JimpImage)
+      const sx0 = Math.round(sh.x) - offsetX
+      const sy0 = Math.round(sh.y) - offsetY
+      compositeTextLayerClipped(finalBase, preparedShape, sx0, sy0)
+    }
+  }
+
   await finalBase.write(options.outputPath as `${string}.${string}`)
 }
 
+/** יישום חיתוך או טשטוש ברזולוציה מלאה (ללא הקטנה לתצוגה) והחזרת Data URL — לשמירת שינויים בעורך. */
+export async function bakeWatermarkToolToDataUrl(options: WatermarkPreviewOptions): Promise<string> {
+  if (!options.baseImageDataUrl && !options.baseImagePath) {
+    throw new Error('bakeWatermarkToolToDataUrl: baseImagePath or baseImageDataUrl required')
+  }
+  const base = options.baseImageDataUrl
+    ? await readImageSource(options.baseImageDataUrl)
+    : await Jimp.read(toReadableImagePath(options.baseImagePath!))
+  const toolMode = options.toolMode ?? 'none'
+  const selectionShape = options.selectionShape ?? 'rect'
+  const selection = getSelectionRect(options, base.bitmap.width, base.bitmap.height)
+  let finalBase = base.clone() as JimpImage
+
+  if (toolMode === 'crop' && selection) {
+    finalBase = base.clone().crop({
+      x: selection.x,
+      y: selection.y,
+      w: selection.width,
+      h: selection.height
+    }) as JimpImage
+    if (selectionShape === 'circle') {
+      applyCircleAlphaMask(finalBase, { x: 0, y: 0, width: selection.width, height: selection.height })
+    }
+  } else if (toolMode === 'blur' && selection) {
+    const blurAmount = getBlurStrengthRadius(options.blurStrength)
+    finalBase = createBlurredBackdrop(base, blurAmount, 1200)
+    const featherAmount = getBlurFeatherPixels(options.blurFeather, selection)
+    const separation = clamp(Math.round(options.focusSeparation ?? 45), 0, 100)
+    if (blurAmount <= 0) finalBase = base.clone() as JimpImage
+    applyBackgroundSeparation(finalBase, selection, selectionShape, featherAmount, options.blurFeather, separation)
+    copyFocusedArea(base, finalBase, selection, selectionShape, featherAmount, options.blurFeather)
+  } else {
+    throw new Error('bakeWatermarkToolToDataUrl: need crop or blur with a valid selection')
+  }
+
+  const buffer = await finalBase.getBuffer('image/png')
+  return `data:image/png;base64,${buffer.toString('base64')}`
+}
+
 export async function renderWatermarkPreviewDataUrl(options: WatermarkPreviewOptions): Promise<string> {
-  const originalBase = await Jimp.read(toReadableImagePath(options.baseImagePath))
+  const originalBase = options.baseImageDataUrl
+    ? await readImageSource(options.baseImageDataUrl)
+    : await Jimp.read(toReadableImagePath(options.baseImagePath!))
   const toolMode = options.toolMode ?? 'none'
   const selectionShape = options.selectionShape ?? 'rect'
   const previewScale = getPreviewScale(originalBase.bitmap.width, originalBase.bitmap.height)

@@ -6,6 +6,7 @@ release
 *.log
 .DS_Store
 *.local
+tsconfig.tsbuildinfo
 
 # face-api model weights (downloaded on-demand via scripts/download-face-models.mjs)
 src/renderer/public/face-models/*

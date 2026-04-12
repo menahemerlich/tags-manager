@@ -221,6 +221,18 @@ export interface FacePersonProfile {
   lastUpdated: string
 }
 
+/** Raster layer from renderer (PNG data URL); position in base-image pixels. */
+export interface WatermarkRasterOverlayPayload {
+  dataUrl: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** @deprecated Prefer WatermarkRasterOverlayPayload — same shape. */
+export type WatermarkTextOverlayPayload = WatermarkRasterOverlayPayload
+
 export interface WatermarkExportPayload {
   baseImagePath: string
   watermarkImagePath: string
@@ -240,6 +252,10 @@ export interface WatermarkExportPayload {
   blurStrength?: number
   blurFeather?: number
   focusSeparation?: number
+  /** Optional text drawn in renderer as PNG; composited after watermark. */
+  textOverlay?: WatermarkRasterOverlayPayload
+  /** Optional shapes (rect/circle) as PNG layers; composited after text. */
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
 }
 
 export type SelectionShape = 'rect' | 'circle'
@@ -271,6 +287,21 @@ export interface WatermarkPreviewPayload {
   focusSeparation?: number
 }
 
+/** אפיון אחד: נתיב קובץ מקורי או Data URL של התמונה הנוכחית (אחרי שמירת חיתוך/טשטוש). */
+export interface WatermarkBakeToolPayload {
+  baseImagePath?: string
+  baseImageDataUrl?: string
+  toolMode: 'crop' | 'blur'
+  selectionShape?: SelectionShape
+  selectionX?: number
+  selectionY?: number
+  selectionWidth?: number
+  selectionHeight?: number
+  blurStrength?: number
+  blurFeather?: number
+  focusSeparation?: number
+}
+
 /** ייצוא קטע וידאו עם סימן מים (ללא כלי חיתוך/טשטוש על הפריים). */
 export interface WatermarkVideoExportPayload {
   baseVideoPath: string
@@ -282,8 +313,21 @@ export interface WatermarkVideoExportPayload {
   opacity: number
   startSec: number
   endSec: number
+  textOverlay?: WatermarkRasterOverlayPayload
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
 }
 
 export type WatermarkExportResult =
   | { ok: true; filePath: string }
   | { ok: false; cancelled?: true; error?: string }
+
+/** חיתוך קטע וידאו לקובץ זמני (עורך סימן מים). */
+export interface VideoTrimSegmentPayload {
+  inputPath: string
+  startSec: number
+  endSec: number
+}
+
+export type VideoTrimSegmentResult =
+  | { ok: true; outputPath: string }
+  | { ok: false; error: string }

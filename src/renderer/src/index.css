@@ -1063,13 +1063,16 @@ tr.selected td {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  /* Cap preview height so media can scale down with `max-height: 100%` on img/video. */
+  --watermark-stage-max-h: min(72vh, calc(100vh - 220px));
 }
 
 .watermark-workspace {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 1rem;
-  align-items: start;
+  align-items: stretch;
+  min-width: 0;
   direction: ltr;
 }
 
@@ -1084,9 +1087,11 @@ tr.selected td {
 
 .watermark-preview-card {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   isolation: isolate;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .watermark-preview-card::before {
@@ -1139,33 +1144,611 @@ tr.selected td {
 .watermark-tools-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  padding: 0.75rem;
-  border: 1px solid rgba(0, 212, 255, 0.16);
-  border-radius: 12px;
-  background: rgba(8, 12, 22, 0.28);
+  gap: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(165deg, rgba(8, 12, 22, 0.42) 0%, rgba(15, 23, 42, 0.32) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-.watermark-tool-icons-row {
+.watermark-tool-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.watermark-tool-palette-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.watermark-tool-palette-main {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.45rem;
+  gap: 0.5rem;
 }
 
-.watermark-tool-icon-btn {
+.watermark-tool-palette-shapes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  max-width: 12rem;
+}
+
+.watermark-tool-palette-divider {
+  height: 1px;
+  margin: 0.15rem 0;
+  background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.2), transparent);
+  border: none;
+}
+
+.watermark-tool-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 3.35rem;
+  padding: 0.45rem 0.35rem;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.45);
+  color: rgba(226, 232, 240, 0.92);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease;
+  box-sizing: border-box;
+}
+
+.watermark-tool-tile:hover:not(:disabled) {
+  border-color: rgba(0, 212, 255, 0.45);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.watermark-tool-tile:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.watermark-tool-tile.is-active {
+  border-color: rgba(0, 212, 255, 0.75);
+  background: linear-gradient(145deg, rgba(0, 212, 255, 0.18) 0%, rgba(124, 58, 237, 0.12) 100%);
+  color: #f8fafc;
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.15);
+}
+
+.watermark-tool-tile-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.watermark-tool-tile-letter {
+  font-weight: 800;
+  font-size: 1.15rem;
+  line-height: 1;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.watermark-tool-tile--shape {
+  min-height: 3rem;
+}
+
+.watermark-tool-session-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  width: 100%;
+  align-items: stretch;
+}
+
+.watermark-tool-session-actions .watermark-tool-session-span {
+  grid-column: 1 / -1;
+}
+
+.watermark-tool-discard-btn {
+  min-height: 2.5rem;
+  padding-inline: 0.5rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: linear-gradient(145deg, rgba(248, 113, 113, 0.1) 0%, rgba(8, 12, 22, 0.5) 100%);
+  color: #fecaca;
+}
+
+.watermark-tool-discard-btn:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: linear-gradient(145deg, rgba(248, 113, 113, 0.18) 0%, rgba(8, 12, 22, 0.45) 100%);
+}
+
+.watermark-tool-discard-btn:disabled {
+  opacity: 0.45;
+}
+
+.watermark-tool-save-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.8rem;
-  padding: 0.4rem;
+  gap: 0.35rem;
+  flex-wrap: nowrap;
+  min-height: 2.5rem;
+  padding-inline: 0.5rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  background: linear-gradient(145deg, rgba(52, 211, 153, 0.12) 0%, rgba(8, 12, 22, 0.5) 100%);
+  color: #bbf7d0;
 }
 
-.watermark-tool-icon-btn svg {
-  width: 1.25rem;
-  height: 1.25rem;
+.watermark-tool-save-btn:hover:not(:disabled) {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: linear-gradient(145deg, rgba(52, 211, 153, 0.2) 0%, rgba(8, 12, 22, 0.45) 100%);
+}
+
+.watermark-tool-save-btn:disabled {
+  opacity: 0.45;
+}
+
+.watermark-tool-save-icon {
+  flex-shrink: 0;
+}
+
+.watermark-tool-save-dot {
+  position: absolute;
+  top: 0.35rem;
+  inset-inline-start: 0.35rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #fbbf24;
+  box-shadow: 0 0 0 2px rgba(8, 12, 22, 0.9);
+}
+
+.watermark-tool-field {
+  margin-bottom: 0;
+}
+
+.watermark-blur-tool-settings {
+  padding-top: 0.15rem;
+  border-top: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+.watermark-tool-letter-icon {
+  font-weight: 800;
+  font-size: 1.05rem;
+  line-height: 1;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.watermark-text-overlay-item {
+  position: absolute;
+  z-index: 6;
+  box-sizing: border-box;
+  /* outline לא גוזל מקום מול מצב מכווץ — מונע קפיצה בין עריכה ללחיצה מחוץ לתיבה */
+  border: none;
+  outline: 1px solid rgba(103, 232, 249, 0.65);
+  outline-offset: -1px;
+  border-radius: 6px;
+  background: transparent;
+  overflow: visible;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  cursor: grab;
+}
+
+.watermark-text-overlay-item:active {
+  cursor: grabbing;
+}
+
+.watermark-text-overlay-textarea {
+  /* לא flex-grow — מתיחה למלוא גובה ההורה גורמת ל-scrollHeight “למלא” את התיבה ולולאת גידול */
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  cursor: text;
+}
+
+/* Single-line watermark editor — WYSIWYG raster below; no text-decoration (avoids double underline). */
+.watermark-text-overlay-input {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  border: none;
+  outline: none;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  cursor: text;
+}
+
+.watermark-text-preview-raster {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+  object-fit: fill;
+}
+
+/* WYSIWYG preview only — invisible chrome; only raster text shows (see App.tsx). */
+.watermark-text-collapsed-wrap {
+  position: absolute;
+  z-index: 6;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.watermark-text-collapsed-hit {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: text;
+  text-align: center;
+}
+
+.watermark-text-collapsed-hit img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.watermark-text-collapsed-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 2rem;
+  font-size: 0.8rem;
+  color: rgba(103, 232, 249, 0.85);
+  user-select: none;
+}
+
+.watermark-shape-overlay-item {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+}
+
+.watermark-shape-overlay-item.selected {
+  outline: 2px dashed rgba(103, 232, 249, 0.95);
+  outline-offset: 2px;
+}
+
+.watermark-shapes-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.watermark-shapes-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+}
+
+.watermark-shapes-style-row input[type='color'] {
+  width: 2rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.watermark-shapes-actions {
+  gap: 0.45rem;
+}
+
+.watermark-shape-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.5rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  color: var(--fg, #e2e8f0);
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+}
+
+.watermark-shape-icon-btn:hover:not(:disabled) {
+  border-color: rgba(103, 232, 249, 0.55);
+  background: rgba(30, 41, 59, 0.75);
+}
+
+.watermark-shape-icon-btn-danger:not(:disabled):hover {
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #fecaca;
+}
+
+.watermark-shape-tool-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted, #94a3b8);
+  flex-shrink: 0;
+}
+
+.watermark-shapes-style-row {
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+  background: rgba(8, 12, 22, 0.28);
+  border: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+.watermark-shape-color-input {
+  flex-shrink: 0;
+}
+
+.watermark-shape-stroke-range {
+  flex: 1 1 5rem;
+  min-width: 4rem;
+  max-width: 12rem;
+}
+
+.watermark-shape-stroke-value {
+  min-width: 2.75rem;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.watermark-text-toolbar {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(0, 212, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(8, 12, 22, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: 100%;
+  max-width: 100%;
+}
+
+.watermark-shapes-inline-row {
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.65rem;
+}
+
+.watermark-shapes-inline-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.watermark-shape-inline-add-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 3.75rem;
+  padding: 0.35rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  background: rgba(8, 12, 22, 0.5);
+  color: var(--accent);
+  font-size: 0.68rem;
+  line-height: 1.1;
+}
+
+.watermark-shape-inline-add-btn:hover {
+  border-color: var(--accent);
+  background: rgba(0, 212, 255, 0.1);
+}
+
+.watermark-shape-inline-add-btn .watermark-shape-picker-glyph {
+  width: 2rem;
+  height: 2rem;
+}
+
+.watermark-shape-inline-add-label {
+  color: var(--muted);
+  max-width: 4.5rem;
+  text-align: center;
+  word-break: break-word;
+}
+
+.watermark-shape-delete-btn {
+  flex-shrink: 0;
+  align-self: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0.4rem;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.22);
+  color: #fecaca;
+}
+
+.watermark-shape-delete-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.38);
+  border-color: rgba(248, 113, 113, 0.65);
+  color: #fff;
+}
+
+.watermark-shape-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.watermark-text-toolbar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.watermark-text-toolbar-row.watermark-text-toolbar-controls {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.15rem;
+  scrollbar-width: thin;
+}
+
+/* Text tool: two compact rows — no horizontal scroll; controls wrap. */
+.watermark-text-toolbar-row-main.watermark-text-toolbar-controls,
+.watermark-text-toolbar-row-align.watermark-text-toolbar-controls {
+  flex-wrap: wrap;
+  overflow-x: visible;
+  overflow-y: visible;
+  padding-bottom: 0;
+}
+
+.watermark-text-toolbar-row-align.watermark-text-toolbar-controls {
+  padding-top: 0.15rem;
+  border-top: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+.watermark-text-toolbar-add-row.watermark-text-toolbar-controls {
+  flex-wrap: wrap;
+  overflow: visible;
+  padding-bottom: 0.35rem;
+  margin-bottom: 0.15rem;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.12);
+}
+
+.watermark-text-toolbar-label {
+  font-size: 0.78rem;
+  color: var(--muted, #94a3b8);
+}
+
+.watermark-text-toolbar-label.tight {
+  margin-inline-end: -0.2rem;
+}
+
+.watermark-text-toolbar-controls input[type='color'] {
+  width: 2rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+.watermark-text-fontsize-input {
+  width: 4.25rem;
+  min-width: 3.25rem;
+  flex-shrink: 0;
+  padding: 0.2rem 0.35rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+  font-size: 0.88rem;
+  text-align: center;
+}
+
+.watermark-text-toolbar-controls select {
+  min-width: 6.5rem;
+  flex-shrink: 0;
+  border-radius: 6px;
+  padding: 0.2rem 0.35rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: inherit;
+}
+
+.watermark-text-style-btn {
+  min-width: 2.25rem;
+  padding: 0.25rem 0.45rem;
+}
+
+.watermark-text-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.5rem;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 0.15rem;
+}
+
+/* כפתורי סדר שכבה (טקסט/צורות) — קומפקטיים בשורה אחת עם שאר הפקדים */
+.watermark-toolbar-layer-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
+
+.watermark-toolbar-layer-btn {
+  padding: 0.18rem 0.42rem;
+  font-size: 0.68rem;
+  line-height: 1.15;
+  min-height: 1.45rem;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.watermark-text-align-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.watermark-text-align-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.15rem;
+  padding: 0.25rem 0.35rem;
+}
+
+.watermark-text-align-btn svg {
+  display: block;
 }
 
 .watermark-tool-cancel-btn {
+  min-height: 2.5rem;
+  border-radius: 10px;
   width: 100%;
 }
 
@@ -1208,18 +1791,49 @@ tr.selected td {
 
 .watermark-stage {
   position: relative;
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
   max-width: 100%;
+  min-width: 0;
+  min-height: 0;
   line-height: 0;
   direction: ltr;
   z-index: 1;
+  overflow: hidden;
+  border-radius: 16px;
 }
 
-.watermark-stage > img,
-.watermark-stage > video {
+/* Wraps the displayed media so overlay coordinates share the image top-left origin (centered in .watermark-stage). */
+.watermark-stage-media-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: var(--watermark-stage-max-h);
+  line-height: 0;
+}
+
+/* Clip watermark/selection/text to the media rect (same as export image bounds). Children re-enable hit-testing. */
+.watermark-stage-overlay-clip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.watermark-stage-overlay-clip > * {
+  pointer-events: auto;
+}
+
+.watermark-stage-media-wrap > img,
+.watermark-stage-media-wrap > video {
   display: block;
   max-width: 100%;
-  max-height: calc(100vh - 290px);
+  max-height: var(--watermark-stage-max-h);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -1234,6 +1848,7 @@ tr.selected td {
   gap: 0.75rem;
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   position: relative;
   z-index: 1;
 }
@@ -1536,6 +2151,17 @@ tr.selected td {
   cursor: nesw-resize;
 }
 
+.watermark-text-overlay-item .watermark-text-resize-handle {
+  z-index: 8;
+}
+
+.watermark-text-overlay-item .watermark-text-rotate-handle {
+  top: -1.85rem;
+  left: calc(50% - 0.5rem);
+  cursor: grab;
+  z-index: 9;
+}
+
 .watermark-overlay-item:active {
   cursor: grabbing;
 }
@@ -1592,6 +2218,75 @@ tr.selected td {
   to {
     transform: translateX(200%);
   }
+}
+
+.watermark-shape-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.watermark-shape-picker-dialog {
+  width: min(100%, 26rem);
+  max-height: min(90vh, 32rem);
+  overflow: auto;
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.watermark-shape-picker-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.watermark-shape-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+}
+
+.watermark-shape-picker-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.65rem 0.5rem;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  background: rgba(8, 12, 22, 0.45);
+  color: var(--text);
+}
+
+.watermark-shape-picker-cell:hover {
+  border-color: var(--accent);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.watermark-shape-picker-glyph {
+  width: 3rem;
+  height: 3rem;
+  color: var(--accent);
+}
+
+.watermark-shape-picker-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.watermark-shape-picker-close {
+  margin-top: 0.85rem;
+  width: 100%;
 }
 
 @media (max-width: 980px) {

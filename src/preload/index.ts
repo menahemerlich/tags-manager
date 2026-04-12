@@ -42,6 +42,9 @@ import type {
   PackageAppForTransferOptions,
   PackageAppForTransferResult,
   ImportUserDataResult,
+  VideoTrimSegmentPayload,
+  VideoTrimSegmentResult,
+  WatermarkBakeToolPayload,
   WatermarkExportPayload,
   WatermarkPreviewPayload,
   WatermarkExportResult,
@@ -154,10 +157,14 @@ const api = {
   getImageDataUrl: (filePath: string) => ipcRenderer.invoke('files:image-data-url', filePath) as Promise<string | null>,
   renderWatermarkPreview: (payload: WatermarkPreviewPayload) =>
     ipcRenderer.invoke('images:render-watermark-preview', payload) as Promise<string | null>,
+  bakeWatermarkTool: (payload: WatermarkBakeToolPayload) =>
+    ipcRenderer.invoke('images:bake-watermark-tool', payload) as Promise<string | null>,
   exportWatermarkedImage: (payload: WatermarkExportPayload) =>
     ipcRenderer.invoke('images:export-watermarked', payload) as Promise<WatermarkExportResult>,
   exportWatermarkedVideo: (payload: WatermarkVideoExportPayload) =>
     ipcRenderer.invoke('videos:export-watermarked', payload) as Promise<WatermarkExportResult>,
+  trimVideoSegment: (payload: VideoTrimSegmentPayload) =>
+    ipcRenderer.invoke('videos:trim-segment', payload) as Promise<VideoTrimSegmentResult>,
   onWatermarkVideoExportProgress: (cb: (p: { percent: number; outputBaseName?: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { percent: number; outputBaseName?: string }) =>
       cb(payload)
@@ -166,7 +173,8 @@ const api = {
   },
   onWatermarkImageExportBusy: (cb: (p: { outputBaseName: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { outputBaseName: string }) => cb(payload)
-    ipcRenderer.on(WATERMARK_IMAGE_EXPORT_BUSY, handler)
+    // `once` avoids runaway work if a listener is ever leaked: each export gets at most one fire.
+    ipcRenderer.once(WATERMARK_IMAGE_EXPORT_BUSY, handler)
     return () => ipcRenderer.removeListener(WATERMARK_IMAGE_EXPORT_BUSY, handler)
   },
   showInFolder: (filePath: string) => ipcRenderer.invoke('shell:show-in-folder', filePath) as Promise<void>,

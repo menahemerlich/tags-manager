@@ -64,6 +64,7 @@ function compactPathDebugLine(d: MediaPathDiagnostics): string {
   return `${LRI}${technical}${PDI}`
 }
 
+/** תצוגה מקדימה לקובץ (תמונה/וידאו) עם כפתורי פתיחה בזיהוי פנים או עורך סימן מים */
 export function FilePreview(props: {
   filePath: string
   size?: number
