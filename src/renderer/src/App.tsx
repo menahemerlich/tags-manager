@@ -32,10 +32,25 @@ type Tab = 'library' | 'search' | 'tags' | 'settings' | 'cloud-sync'
 
 type FaceTab = 'faces' | 'watermark'
 
-type WatermarkToolMode = 'none' | 'crop' | 'blur' | 'text'
+type WatermarkToolMode = 'none' | 'crop' | 'blur' | 'text' | 'shapes'
 type WatermarkSelectionShape = SelectionShape
 type WatermarkSelectionRect = { x: number; y: number; width: number; height: number }
 type WatermarkSelectionHandle = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+/** Min text frame size in image pixels (matches previous single-corner resize). */
+const WATERMARK_TEXT_RECT_MIN_W = 80
+const WATERMARK_TEXT_RECT_MIN_H = 48
+
+const WATERMARK_TEXT_HANDLE_LABEL: Record<Exclude<WatermarkSelectionHandle, 'move'>, string> = {
+  n: 'קצה עליון',
+  s: 'קצה תחתון',
+  e: 'קצה ימני',
+  w: 'קצה שמאלי',
+  ne: 'פינה ימנית עליונה',
+  nw: 'פינה שמאלית עליונה',
+  se: 'פינה ימנית תחתונה',
+  sw: 'פינה שמאלית תחתונה'
+}
 
 type FolderAccentStyle = CSSProperties & {
   '--folder-accent'?: string
@@ -101,20 +116,90 @@ function formatWatermarkTimeSec(sec: number): string {
   return `${core}.${frac}`
 }
 
+type WatermarkTextAlign = 'left' | 'center' | 'right'
+
 type WatermarkTextStyleState = {
   color: string
+  /** Text area background; `transparent` = none. */
+  backgroundColor: string
   fontFamily: string
   fontSizePx: number
   bold: boolean
   italic: boolean
+  textAlign: WatermarkTextAlign
+}
+
+type WatermarkShapeKind = 'rect' | 'circle'
+
+type WatermarkShapeItem = {
+  id: string
+  kind: WatermarkShapeKind
+  x: number
+  y: number
+  width: number
+  height: number
+  fillColor: string
+  strokeColor: string
+  strokeWidth: number
+}
+
+const WATERMARK_SHAPE_MIN_W = 24
+const WATERMARK_SHAPE_MIN_H = 24
+/** Max stroke in image pixels (export + preview use the same effective clamp). */
+const WATERMARK_SHAPE_STROKE_MAX = 120
+
+/** Clamp stroke so it fits inside the shape box and matches canvas drawing. */
+function watermarkShapeEffectiveStrokePx(strokeWidth: number, w: number, h: number): number {
+  const wi = Math.max(1, Math.floor(w))
+  const hi = Math.max(1, Math.floor(h))
+  const maxByBox = Math.max(0, Math.min(wi, hi) - 2)
+  return Math.max(0, Math.min(strokeWidth, WATERMARK_SHAPE_STROKE_MAX, maxByBox))
+}
+
+function newWatermarkShapeId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `wm-sh-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function createWatermarkShapeItem(kind: WatermarkShapeKind, baseW: number, baseH: number): WatermarkShapeItem {
+  const w = Math.max(WATERMARK_SHAPE_MIN_W, Math.round(baseW * 0.18))
+  const h = Math.max(WATERMARK_SHAPE_MIN_H, Math.round(baseH * 0.12))
+  return {
+    id: newWatermarkShapeId(),
+    kind,
+    x: Math.round((baseW - w) / 2),
+    y: Math.round((baseH - h) / 2),
+    width: w,
+    height: h,
+    fillColor: 'rgba(255,255,255,0.25)',
+    strokeColor: '#ffffff',
+    strokeWidth: 2
+  }
+}
+
+function isCanvasColorTransparent(c: string): boolean {
+  const s = c.trim().toLowerCase()
+  if (s === 'transparent') return true
+  const m = /^rgba?\(\s*([^)]+)\s*\)/.exec(s)
+  if (m) {
+    const parts = m[1].split(',').map((x) => x.trim())
+    if (parts.length === 4) {
+      const a = parseFloat(parts[3])
+      return Number.isFinite(a) && a < 0.001
+    }
+  }
+  return false
 }
 
 const DEFAULT_WATERMARK_TEXT_STYLE: WatermarkTextStyleState = {
   color: '#ffffff',
+  backgroundColor: 'transparent',
   fontFamily: 'Segoe UI, Tahoma, Arial, sans-serif',
   fontSizePx: 28,
   bold: false,
-  italic: false
+  italic: false,
+  textAlign: 'right'
 }
 
 const WATERMARK_TEXT_FONT_OPTIONS: { label: string; value: string }[] = [
@@ -123,6 +208,103 @@ const WATERMARK_TEXT_FONT_OPTIONS: { label: string; value: string }[] = [
   { label: 'David', value: 'David, serif' },
   { label: 'Times New Roman', value: '"Times New Roman", Times, serif' }
 ]
+
+const WATERMARK_TEXT_FONT_SIZE_MIN = 8
+/** Hard cap to avoid runaway CPU/memory when wrapping or drawing text. */
+const WATERMARK_TEXT_EXPORT_MAX_LINES = 4000
+/** ~25MP; larger canvases can freeze the machine during `toDataURL` / IPC. */
+const WATERMARK_TEXT_LAYER_MAX_PIXELS = 25_000_000
+
+function renderWatermarkShapeLayerDataUrl(
+  kind: WatermarkShapeKind,
+  width: number,
+  height: number,
+  fillColor: string,
+  strokeColor: string,
+  strokeWidth: number
+): string {
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width))
+  canvas.height = Math.max(1, Math.round(height))
+  if (canvas.width * canvas.height > WATERMARK_TEXT_LAYER_MAX_PIXELS) {
+    throw new Error('הצורה גדולה מדי לייצוא.')
+  }
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return ''
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  const w = canvas.width
+  const h = canvas.height
+  const sw = watermarkShapeEffectiveStrokePx(strokeWidth, w, h)
+  const half = sw / 2
+  if (kind === 'rect') {
+    if (!isCanvasColorTransparent(fillColor)) {
+      ctx.fillStyle = fillColor
+      ctx.fillRect(0, 0, w, h)
+    }
+    if (sw > 0 && !isCanvasColorTransparent(strokeColor)) {
+      const iw = w - sw
+      const ih = h - sw
+      if (iw > 0 && ih > 0) {
+        ctx.strokeStyle = strokeColor
+        ctx.lineWidth = sw
+        ctx.strokeRect(half, half, iw, ih)
+      }
+    }
+  } else {
+    ctx.beginPath()
+    ctx.ellipse(
+      w / 2,
+      h / 2,
+      Math.max(0.5, w / 2 - half),
+      Math.max(0.5, h / 2 - half),
+      0,
+      0,
+      Math.PI * 2
+    )
+    if (!isCanvasColorTransparent(fillColor)) {
+      ctx.fillStyle = fillColor
+      ctx.fill()
+    }
+    if (sw > 0 && !isCanvasColorTransparent(strokeColor)) {
+      ctx.strokeStyle = strokeColor
+      ctx.lineWidth = sw
+      ctx.stroke()
+    }
+  }
+  return canvas.toDataURL('image/png')
+}
+
+/** Match `.watermark-text-overlay-item` border (each side); `textRect` is the full box including border. */
+const WATERMARK_TEXT_OVERLAY_BORDER_PX = 2
+/** Match `.watermark-text-move-strip` height in `index.css`. */
+const WATERMARK_TEXT_MOVE_STRIP_CSS_PX = 14
+/** Match `.watermark-text-move-strip` border-bottom (space before textarea). */
+const WATERMARK_TEXT_STRIP_BORDER_BOTTOM_PX = 1
+/** Match `.watermark-text-overlay-textarea` padding in `index.css`. */
+const WATERMARK_TEXT_AREA_PAD_X = 8
+const WATERMARK_TEXT_AREA_PAD_Y = 6
+
+/**
+ * Where text is actually painted: inside dashed border, below strip (+ its bottom border), inside textarea padding.
+ * Export uses this rect for PNG size and composite position so output matches the textarea (WYSIWYG).
+ */
+function getWatermarkTextContentRectInImage(rect: WatermarkSelectionRect): WatermarkSelectionRect {
+  const border = WATERMARK_TEXT_OVERLAY_BORDER_PX
+  const stripTotal = WATERMARK_TEXT_MOVE_STRIP_CSS_PX + WATERMARK_TEXT_STRIP_BORDER_BOTTOM_PX
+  const padX = WATERMARK_TEXT_AREA_PAD_X
+  const padY = WATERMARK_TEXT_AREA_PAD_Y
+  const innerW = rect.width - 2 * border
+  const innerH = rect.height - 2 * border
+  const textareaInnerH = innerH - stripTotal
+  const w = Math.max(1, Math.round(innerW - 2 * padX))
+  const h = Math.max(1, Math.round(textareaInnerH - 2 * padY))
+  return {
+    x: Math.round(rect.x + border + padX),
+    y: Math.round(rect.y + border + stripTotal + padY),
+    width: w,
+    height: h
+  }
+}
 
 function wrapCanvasLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
   const raw = text.trim() || ' '
@@ -160,36 +342,61 @@ function wrapCanvasLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: 
   return out.length ? out : [' ']
 }
 
+/** Rasterize only the textarea *content* box (same pixels as `overflow:hidden` clips in the editor). */
 function renderWatermarkTextLayerDataUrl(
   text: string,
-  width: number,
-  height: number,
+  contentWidth: number,
+  contentHeight: number,
   style: WatermarkTextStyleState
 ): string {
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(width))
-  canvas.height = Math.max(1, Math.round(height))
+  canvas.width = Math.max(1, Math.round(contentWidth))
+  canvas.height = Math.max(1, Math.round(contentHeight))
+  if (canvas.width * canvas.height > WATERMARK_TEXT_LAYER_MAX_PIXELS) {
+    throw new Error('מסגרת הטקסט גדולה מדי לייצוא (הקטן את המסגרת או את גודל התמונה).')
+  }
   const ctx = canvas.getContext('2d')
   if (!ctx) return ''
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  const drawableW = Math.max(1, canvas.width)
+  const drawableH = Math.max(1, canvas.height)
+
+  if (!isCanvasColorTransparent(style.backgroundColor)) {
+    ctx.fillStyle = style.backgroundColor
+    ctx.fillRect(0, 0, drawableW, drawableH)
+  }
+
   const fontWeight = style.bold ? '700' : '400'
   const fontStyle = style.italic ? 'italic' : 'normal'
   ctx.font = `${fontStyle} ${fontWeight} ${style.fontSizePx}px ${style.fontFamily}`
   ctx.fillStyle = style.color
   ctx.textBaseline = 'top'
-  ctx.textAlign = 'right'
+  const align = style.textAlign ?? 'right'
+  ctx.textAlign = align
   ctx.direction = 'rtl'
 
-  const padding = 10
-  const maxW = Math.max(1, canvas.width - padding * 2)
-  const lines = wrapCanvasLines(ctx, text, maxW)
-  const lineHeight = style.fontSizePx * 1.3
-  let y = padding
+  const lines = wrapCanvasLines(ctx, text, drawableW).slice(0, WATERMARK_TEXT_EXPORT_MAX_LINES)
+  /** Match `.watermark-text-overlay-textarea` `line-height: 1.35` */
+  const lineHeight = style.fontSizePx * 1.35
+  /**
+   * Browsers place glyphs inside each textarea line-box with half-leading.
+   * Start at that offset so exported canvas matches textarea vertical layout.
+   */
+  const firstLineTopOffset = Math.max(0, (lineHeight - style.fontSizePx) / 2)
+  const x =
+    align === 'left' ? 0 : align === 'center' ? drawableW / 2 : drawableW
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, drawableW, drawableH)
+  ctx.clip()
+  let y = firstLineTopOffset
   for (const line of lines) {
-    if (y + lineHeight > canvas.height - padding) break
-    ctx.fillText(line, canvas.width - padding, y)
+    ctx.fillText(line, x, y)
     y += lineHeight
   }
+  ctx.restore()
   return canvas.toDataURL('image/png')
 }
 
@@ -2035,6 +2242,8 @@ function WatermarkEditorTab({
   const [isToolsOpen, setIsToolsOpen] = useState(false)
   const [textContent, setTextContent] = useState('')
   const [textRect, setTextRect] = useState<WatermarkSelectionRect | null>(null)
+  const [shapeItems, setShapeItems] = useState<WatermarkShapeItem[]>([])
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null)
   const [textStyle, setTextStyle] = useState<WatermarkTextStyleState>(() => ({ ...DEFAULT_WATERMARK_TEXT_STYLE }))
   const [selectionShape, setSelectionShape] = useState<WatermarkSelectionShape>('rect')
   const [blurStrength, setBlurStrength] = useState(14)
@@ -2051,11 +2260,19 @@ function WatermarkEditorTab({
   const isCustomWatermark = !!watermarkImagePath && watermarkImagePath !== defaultWatermarkAssetUrl
   const isSelectionToolActive = activeTool === 'crop' || activeTool === 'blur'
   const textDragStateRef = useRef<{
-    mode: 'move' | 'resize'
+    mode: WatermarkSelectionHandle
     startClientX: number
     startClientY: number
     startRect: WatermarkSelectionRect
   } | null>(null)
+  const shapeDragStateRef = useRef<{
+    shapeId: string
+    mode: WatermarkSelectionHandle
+    startClientX: number
+    startClientY: number
+    startRect: WatermarkSelectionRect
+  } | null>(null)
+  const watermarkExportInFlightRef = useRef(false)
   const baseIsVideo = useMemo(
     () => !!baseImagePath && isWatermarkVideoPath(baseImagePath),
     [baseImagePath]
@@ -2063,6 +2280,8 @@ function WatermarkEditorTab({
 
   const baseImgRef = useRef<HTMLImageElement | null>(null)
   const baseVideoRef = useRef<HTMLVideoElement | null>(null)
+  const stageMediaWrapRef = useRef<HTMLDivElement | null>(null)
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
   const dragStateRef = useRef<{
     mode: 'move' | 'resize'
     startClientX: number
@@ -2094,6 +2313,38 @@ function WatermarkEditorTab({
     setClipStartSec(start)
     setClipEndSec(end)
   }, [])
+
+  const getLiveTextContentRectInImage = useCallback(
+    (rect: WatermarkSelectionRect): WatermarkSelectionRect => {
+      if (!baseImageSize) return getWatermarkTextContentRectInImage(rect)
+      const wrapEl = stageMediaWrapRef.current
+      const textAreaEl = textAreaRef.current
+      if (!wrapEl || !textAreaEl) return getWatermarkTextContentRectInImage(rect)
+      const wrapRect = wrapEl.getBoundingClientRect()
+      const taRect = textAreaEl.getBoundingClientRect()
+      if (wrapRect.width <= 0 || wrapRect.height <= 0 || taRect.width <= 0 || taRect.height <= 0) {
+        return getWatermarkTextContentRectInImage(rect)
+      }
+      const cs = window.getComputedStyle(textAreaEl)
+      const padL = Number.parseFloat(cs.paddingLeft || '0') || 0
+      const padR = Number.parseFloat(cs.paddingRight || '0') || 0
+      const padT = Number.parseFloat(cs.paddingTop || '0') || 0
+      const padB = Number.parseFloat(cs.paddingBottom || '0') || 0
+      const contentLeft = taRect.left + padL
+      const contentTop = taRect.top + padT
+      const contentWidth = Math.max(1, taRect.width - padL - padR)
+      const contentHeight = Math.max(1, taRect.height - padT - padB)
+      const scaleX = baseImageSize.width / wrapRect.width
+      const scaleY = baseImageSize.height / wrapRect.height
+      return {
+        x: Math.round((contentLeft - wrapRect.left) * scaleX),
+        y: Math.round((contentTop - wrapRect.top) * scaleY),
+        width: Math.max(1, Math.round(contentWidth * scaleX)),
+        height: Math.max(1, Math.round(contentHeight * scaleY))
+      }
+    },
+    [baseImageSize]
+  )
 
   const placeDefaultWatermark = useCallback((baseWidth: number, baseHeight: number, aspectRatio: number) => {
     const ratio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1
@@ -2185,6 +2436,11 @@ function WatermarkEditorTab({
     [selectionShape]
   )
 
+  const textRectHandles = useMemo(
+    () => ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const satisfies readonly Exclude<WatermarkSelectionHandle, 'move'>[],
+    []
+  )
+
   const blurFeatherPreviewPx = useMemo(() => {
     if (!selectionRect || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return 0
     const scaleX = stageSize.width / baseImageSize.width
@@ -2236,7 +2492,16 @@ function WatermarkEditorTab({
         if (baseImageSize) {
           setTextRect((prev) => prev ?? placeDefaultTextRect(baseImageSize.width, baseImageSize.height))
         }
-        setTextContent((t) => (t.trim() ? t : 'טקסט'))
+        return
+      }
+      if (tool === 'shapes') {
+        setEditorError(null)
+        setActiveTool('shapes')
+        if (baseImageSize) {
+          setShapeItems((prev) =>
+            prev.length > 0 ? prev : [createWatermarkShapeItem('rect', baseImageSize.width, baseImageSize.height)]
+          )
+        }
         return
       }
       setEditorError(null)
@@ -2264,6 +2529,8 @@ function WatermarkEditorTab({
     setSelectionShape('rect')
     setTextContent('')
     setTextRect(null)
+    setShapeItems([])
+    setSelectedShapeId(null)
     setTextStyle({ ...DEFAULT_WATERMARK_TEXT_STYLE })
     setBlurStrength(14)
     setBlurFeather(24)
@@ -2310,6 +2577,13 @@ function WatermarkEditorTab({
       blurPreviewSourceRef.current = null
     }
   }, [baseImagePath])
+
+  useEffect(() => {
+    if (activeTool !== 'shapes' || shapeItems.length === 0) return
+    setSelectedShapeId((cur) =>
+      cur && shapeItems.some((s) => s.id === cur) ? cur : shapeItems[0].id
+    )
+  }, [activeTool, shapeItems])
 
   useEffect(() => {
     if (!baseImageSrc && !baseVideoUrl) return
@@ -2429,26 +2703,49 @@ function WatermarkEditorTab({
   }, [blurParams, blurPreviewSourceKey, requestBlurPreviewRender])
 
   useEffect(() => {
-    if (!baseImageSize || activeTool === 'none' || activeTool === 'text') return
+    if (!baseImageSize || activeTool === 'none' || activeTool === 'text' || activeTool === 'shapes') return
     setSelectionRect((prev) => prev ?? createDefaultSelectionRect(baseImageSize.width, baseImageSize.height))
   }, [activeTool, baseImageSize, createDefaultSelectionRect])
 
   useEffect(() => {
     if (!baseImageSize) return
-    setTextRect((prev) =>
-      prev ? clampWatermarkIntoBounds(prev, baseImageSize, currentWatermarkBounds) : prev
-    )
+    setTextRect((prev) => {
+      if (!prev) return prev
+      const next = clampWatermarkIntoBounds(prev, baseImageSize, currentWatermarkBounds)
+      if (
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.width === next.width &&
+        prev.height === next.height
+      ) {
+        return prev
+      }
+      return next
+    })
   }, [baseImageSize, clampWatermarkIntoBounds, currentWatermarkBounds])
 
   useEffect(() => {
-    if (!baseImageSize || !watermarkRect) return
-    setWatermarkRect((prev) => (prev ? clampWatermarkIntoBounds(prev, baseImageSize, currentWatermarkBounds) : prev))
-  }, [baseImageSize, clampWatermarkIntoBounds, currentWatermarkBounds, watermarkRect])
+    if (!baseImageSize) return
+    setWatermarkRect((prev) => {
+      if (!prev) return prev
+      const next = clampWatermarkIntoBounds(prev, baseImageSize, currentWatermarkBounds)
+      if (
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.width === next.width &&
+        prev.height === next.height
+      ) {
+        return prev
+      }
+      return next
+    })
+  }, [baseImageSize, clampWatermarkIntoBounds, currentWatermarkBounds])
 
   const endDrag = useCallback(() => {
     dragStateRef.current = null
     selectionDragStateRef.current = null
     textDragStateRef.current = null
+    shapeDragStateRef.current = null
   }, [])
 
   const handleGlobalTextMouseMove = useCallback(
@@ -2477,21 +2774,130 @@ function WatermarkEditorTab({
         return
       }
 
-      const nextW = clampNumber(
-        drag.startRect.width + deltaX,
-        80,
-        Math.max(80, bounds.x + bounds.width - drag.startRect.x)
-      )
-      const nextH = clampNumber(
-        drag.startRect.height + deltaY,
-        48,
-        Math.max(48, bounds.y + bounds.height - drag.startRect.y)
-      )
+      const minW = WATERMARK_TEXT_RECT_MIN_W
+      const minH = WATERMARK_TEXT_RECT_MIN_H
+      let nextX = drag.startRect.x
+      let nextY = drag.startRect.y
+      let nextWidth = drag.startRect.width
+      let nextHeight = drag.startRect.height
+
+      if (drag.mode.includes('e')) {
+        nextWidth = clampNumber(
+          drag.startRect.width + deltaX,
+          minW,
+          Math.max(minW, bounds.x + bounds.width - drag.startRect.x)
+        )
+      }
+      if (drag.mode.includes('s')) {
+        nextHeight = clampNumber(
+          drag.startRect.height + deltaY,
+          minH,
+          Math.max(minH, bounds.y + bounds.height - drag.startRect.y)
+        )
+      }
+      if (drag.mode.includes('w')) {
+        const proposedX = clampNumber(
+          drag.startRect.x + deltaX,
+          bounds.x,
+          drag.startRect.x + drag.startRect.width - minW
+        )
+        nextWidth = drag.startRect.width - (proposedX - drag.startRect.x)
+        nextX = proposedX
+      }
+      if (drag.mode.includes('n')) {
+        const proposedY = clampNumber(
+          drag.startRect.y + deltaY,
+          bounds.y,
+          drag.startRect.y + drag.startRect.height - minH
+        )
+        nextHeight = drag.startRect.height - (proposedY - drag.startRect.y)
+        nextY = proposedY
+      }
+
       setTextRect({
-        ...drag.startRect,
-        width: Math.round(nextW),
-        height: Math.round(nextH)
+        x: Math.round(nextX),
+        y: Math.round(nextY),
+        width: Math.round(nextWidth),
+        height: Math.round(nextHeight)
       })
+    },
+    [baseImageSize, currentWatermarkBounds, getPlacementBounds, stageSize.height, stageSize.width]
+  )
+
+  const handleGlobalShapeMouseMove = useCallback(
+    (event: MouseEvent) => {
+      const drag = shapeDragStateRef.current
+      if (!drag || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return
+
+      const scaleX = baseImageSize.width / stageSize.width
+      const scaleY = baseImageSize.height / stageSize.height
+      const deltaX = (event.clientX - drag.startClientX) * scaleX
+      const deltaY = (event.clientY - drag.startClientY) * scaleY
+      const bounds = getPlacementBounds(baseImageSize, currentWatermarkBounds)
+
+      setShapeItems((items) =>
+        items.map((item) => {
+          if (item.id !== drag.shapeId) return item
+          if (drag.mode === 'move') {
+            const w = drag.startRect.width
+            const h = drag.startRect.height
+            return {
+              ...item,
+              x: Math.round(
+                clampNumber(drag.startRect.x + deltaX, bounds.x, Math.max(bounds.x, bounds.x + bounds.width - w))
+              ),
+              y: Math.round(
+                clampNumber(drag.startRect.y + deltaY, bounds.y, Math.max(bounds.y, bounds.y + bounds.height - h))
+              )
+            }
+          }
+          const minW = WATERMARK_SHAPE_MIN_W
+          const minH = WATERMARK_SHAPE_MIN_H
+          let nextX = drag.startRect.x
+          let nextY = drag.startRect.y
+          let nextWidth = drag.startRect.width
+          let nextHeight = drag.startRect.height
+          if (drag.mode.includes('e')) {
+            nextWidth = clampNumber(
+              drag.startRect.width + deltaX,
+              minW,
+              Math.max(minW, bounds.x + bounds.width - drag.startRect.x)
+            )
+          }
+          if (drag.mode.includes('s')) {
+            nextHeight = clampNumber(
+              drag.startRect.height + deltaY,
+              minH,
+              Math.max(minH, bounds.y + bounds.height - drag.startRect.y)
+            )
+          }
+          if (drag.mode.includes('w')) {
+            const proposedX = clampNumber(
+              drag.startRect.x + deltaX,
+              bounds.x,
+              drag.startRect.x + drag.startRect.width - minW
+            )
+            nextWidth = drag.startRect.width - (proposedX - drag.startRect.x)
+            nextX = proposedX
+          }
+          if (drag.mode.includes('n')) {
+            const proposedY = clampNumber(
+              drag.startRect.y + deltaY,
+              bounds.y,
+              drag.startRect.y + drag.startRect.height - minH
+            )
+            nextHeight = drag.startRect.height - (proposedY - drag.startRect.y)
+            nextY = proposedY
+          }
+          return {
+            ...item,
+            x: Math.round(nextX),
+            y: Math.round(nextY),
+            width: Math.round(nextWidth),
+            height: Math.round(nextHeight)
+          }
+        })
+      )
     },
     [baseImageSize, currentWatermarkBounds, getPlacementBounds, stageSize.height, stageSize.width]
   )
@@ -2601,14 +3007,16 @@ function WatermarkEditorTab({
     window.addEventListener('mousemove', handleGlobalMouseMove)
     window.addEventListener('mousemove', handleGlobalSelectionMouseMove)
     window.addEventListener('mousemove', handleGlobalTextMouseMove)
+    window.addEventListener('mousemove', handleGlobalShapeMouseMove)
     window.addEventListener('mouseup', onMouseUp)
     return () => {
       window.removeEventListener('mousemove', handleGlobalMouseMove)
       window.removeEventListener('mousemove', handleGlobalSelectionMouseMove)
       window.removeEventListener('mousemove', handleGlobalTextMouseMove)
+      window.removeEventListener('mousemove', handleGlobalShapeMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [endDrag, handleGlobalMouseMove, handleGlobalSelectionMouseMove, handleGlobalTextMouseMove])
+  }, [endDrag, handleGlobalMouseMove, handleGlobalSelectionMouseMove, handleGlobalShapeMouseMove, handleGlobalTextMouseMove])
 
   async function applyBaseMediaPath(nextPath: string): Promise<void> {
     setEditorError(null)
@@ -2744,7 +3152,7 @@ function WatermarkEditorTab({
     }
   }
 
-  function startTextDrag(event: React.MouseEvent, mode: 'move' | 'resize'): void {
+  function startTextDrag(event: React.MouseEvent, mode: WatermarkSelectionHandle): void {
     if (!textRect) return
     event.preventDefault()
     event.stopPropagation()
@@ -2756,7 +3164,23 @@ function WatermarkEditorTab({
     }
   }
 
+  function startShapeDrag(event: React.MouseEvent, shapeId: string, mode: WatermarkSelectionHandle): void {
+    const item = shapeItems.find((s) => s.id === shapeId)
+    if (!item) return
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedShapeId(shapeId)
+    shapeDragStateRef.current = {
+      shapeId,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startRect: { x: item.x, y: item.y, width: item.width, height: item.height }
+    }
+  }
+
   async function exportMain(): Promise<void> {
+    if (watermarkExportInFlightRef.current) return
     if (!baseImagePath || !watermarkImagePath || !watermarkRect) {
       setEditorError('יש לבחור מדיה ראשית וסימן מים לפני הייצוא.')
       return
@@ -2774,22 +3198,70 @@ function WatermarkEditorTab({
       setEditorError('בחר אזור על התמונה לפני הייצוא.')
       return
     }
+
+    watermarkExportInFlightRef.current = true
     setEditorError(null)
     setExportMsg(null)
     setIsExporting(true)
     let unsubVideoProgress: (() => void) | undefined
     let unsubImageBusy: (() => void) | undefined
-    const textOverlayPayload =
-      textContent.trim() && textRect
-        ? {
-            dataUrl: renderWatermarkTextLayerDataUrl(textContent, textRect.width, textRect.height, textStyle),
-            x: textRect.x,
-            y: textRect.y,
-            width: textRect.width,
-            height: textRect.height
-          }
-        : undefined
     try {
+      let textOverlayPayload:
+        | {
+            dataUrl: string
+            x: number
+            y: number
+            width: number
+            height: number
+          }
+        | undefined
+      try {
+        textOverlayPayload =
+          textContent.trim() && textRect
+            ? (() => {
+                const cr = liveTextContentRectInImage ?? getLiveTextContentRectInImage(textRect)
+                return {
+                  dataUrl: renderWatermarkTextLayerDataUrl(textContent, cr.width, cr.height, textStyle),
+                  x: cr.x,
+                  y: cr.y,
+                  width: cr.width,
+                  height: cr.height
+                }
+              })()
+            : undefined
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'שכבת טקסט לייצוא נכשלה.'
+        setEditorError(msg)
+        return
+      }
+
+      let shapeOverlaysPayload:
+        | Array<{ dataUrl: string; x: number; y: number; width: number; height: number }>
+        | undefined
+      try {
+        shapeOverlaysPayload =
+          shapeItems.length > 0
+            ? shapeItems.map((s) => ({
+                dataUrl: renderWatermarkShapeLayerDataUrl(
+                  s.kind,
+                  s.width,
+                  s.height,
+                  s.fillColor,
+                  s.strokeColor,
+                  s.strokeWidth
+                ),
+                x: s.x,
+                y: s.y,
+                width: s.width,
+                height: s.height
+              }))
+            : undefined
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'שכבת צורות לייצוא נכשלה.'
+        setEditorError(msg)
+        return
+      }
+
       if (baseIsVideo) {
         unsubVideoProgress = window.api.onWatermarkVideoExportProgress((p) => {
           setExportOverlay((prev) => ({
@@ -2808,7 +3280,8 @@ function WatermarkEditorTab({
           opacity: watermarkOpacity,
           startSec: clipStartSec,
           endSec: clipEndSec,
-          textOverlay: textOverlayPayload
+          textOverlay: textOverlayPayload,
+          shapeOverlays: shapeOverlaysPayload
         })
         if (!res.ok) {
           if (!res.cancelled) setEditorError(res.error ?? 'ייצוא הסרט נכשל.')
@@ -2817,6 +3290,7 @@ function WatermarkEditorTab({
         setExportMsg(`הסרט יוצא בהצלחה: ${res.filePath}`)
         return
       }
+
       unsubImageBusy = window.api.onWatermarkImageExportBusy((p) => {
         setExportOverlay({ kind: 'image', fileName: p.outputBaseName })
       })
@@ -2838,18 +3312,22 @@ function WatermarkEditorTab({
         blurStrength,
         blurFeather,
         focusSeparation,
-        textOverlay: textOverlayPayload
+        textOverlay: textOverlayPayload,
+        shapeOverlays: shapeOverlaysPayload
       })
       if (!res.ok) {
         if (!res.cancelled) setEditorError(res.error ?? 'ייצוא התמונה נכשל.')
         return
       }
       setExportMsg(`התמונה יוצאה בהצלחה: ${res.filePath}`)
+    } catch (e) {
+      setEditorError(e instanceof Error ? e.message : 'ייצוא נכשל.')
     } finally {
       unsubVideoProgress?.()
       unsubImageBusy?.()
       setExportOverlay(null)
       setIsExporting(false)
+      watermarkExportInFlightRef.current = false
     }
   }
 
@@ -2876,6 +3354,69 @@ function WatermarkEditorTab({
       height: textRect.height * scaleY
     }
   }, [baseImageSize, stageSize.height, stageSize.width, textRect])
+
+  const liveTextContentRectInImage = useMemo(() => {
+    if (!textRect) return null
+    return getLiveTextContentRectInImage(textRect)
+  }, [getLiveTextContentRectInImage, textRect, displayTextRect, activeTool, stageSize.width, stageSize.height])
+
+  const displayTextContentRect = useMemo(() => {
+    if (!displayTextRect) return null
+    if (liveTextContentRectInImage && baseImageSize && stageSize.width > 0 && stageSize.height > 0) {
+      const scaleX = stageSize.width / baseImageSize.width
+      const scaleY = stageSize.height / baseImageSize.height
+      return {
+        x: liveTextContentRectInImage.x * scaleX - displayTextRect.left,
+        y: liveTextContentRectInImage.y * scaleY - displayTextRect.top,
+        width: liveTextContentRectInImage.width * scaleX,
+        height: liveTextContentRectInImage.height * scaleY
+      }
+    }
+    return getWatermarkTextContentRectInImage({
+      x: 0,
+      y: 0,
+      width: displayTextRect.width,
+      height: displayTextRect.height
+    })
+  }, [baseImageSize, displayTextRect, liveTextContentRectInImage, stageSize.height, stageSize.width])
+
+  const previewTextLayerDataUrl = useMemo(() => {
+    if (!displayTextRect || !displayTextContentRect || !textRect || !baseImageSize) return ''
+    try {
+      const previewScale = Math.min(stageSize.width / baseImageSize.width, stageSize.height / baseImageSize.height)
+      return renderWatermarkTextLayerDataUrl(
+        textContent,
+        displayTextContentRect.width,
+        displayTextContentRect.height,
+        {
+          ...textStyle,
+          fontSizePx: Math.max(WATERMARK_TEXT_FONT_SIZE_MIN, textStyle.fontSizePx * previewScale)
+        }
+      )
+    } catch {
+      return ''
+    }
+  }, [baseImageSize, displayTextContentRect, displayTextRect, stageSize.height, stageSize.width, textContent, textRect, textStyle])
+
+  const selectedShape = useMemo(
+    () => shapeItems.find((s) => s.id === selectedShapeId) ?? null,
+    [shapeItems, selectedShapeId]
+  )
+
+  const displayShapeOverlays = useMemo(() => {
+    if (!baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return []
+    const scaleX = stageSize.width / baseImageSize.width
+    const scaleY = stageSize.height / baseImageSize.height
+    const ps = Math.min(scaleX, scaleY)
+    return shapeItems.map((item) => ({
+      item,
+      left: item.x * scaleX,
+      top: item.y * scaleY,
+      width: item.width * scaleX,
+      height: item.height * scaleY,
+      strokePx: watermarkShapeEffectiveStrokePx(item.strokeWidth, item.width, item.height) * ps
+    }))
+  }, [baseImageSize, shapeItems, stageSize.height, stageSize.width])
 
   const displaySelectionRect = useMemo(() => {
     if (!selectionRect || !baseImageSize || stageSize.width <= 0 || stageSize.height <= 0) return null
@@ -2965,7 +3506,7 @@ function WatermarkEditorTab({
   }, [rectFeatherPreviewGeometry])
 
   const selectionOverlayStyle = useMemo<CSSProperties | null>(() => {
-    if (!displaySelectionRect || activeTool === 'none' || activeTool === 'text') return null
+    if (!displaySelectionRect || activeTool === 'none' || activeTool === 'text' || activeTool === 'shapes') return null
     return {
       left: displaySelectionRect.left,
       top: displaySelectionRect.top,
@@ -2991,15 +3532,19 @@ function WatermarkEditorTab({
 
   const toolSummary = baseIsVideo
     ? activeTool === 'text'
-      ? 'טקסט: גרור את המסגרת, ערוך בפס למטה.'
-      : 'וידאו: סימן מים, טקסט וייצוא קטע (ללא חיתוך או טשטוש על הפריים).'
+      ? 'טקסט: הקלד על התמונה; גרירה מהפס העליון; עיצוב בפס למטה.'
+      : activeTool === 'shapes'
+        ? 'צורות: גרירה והגדלה; צבעי מילוי ומסגרת בפס הכלים.'
+        : 'וידאו: סימן מים, טקסט, צורות וייצוא קטע (ללא חיתוך או טשטוש על הפריים).'
     : activeTool === 'crop'
       ? `חיתוך פעיל: ${selectionShape === 'circle' ? 'עגול' : 'מרובע'}.`
       : activeTool === 'blur'
         ? `טשטוש רקע פעיל: ${selectionShape === 'circle' ? 'בחירה עגולה' : 'בחירה מרובעת'}.`
         : activeTool === 'text'
-          ? 'טקסט: גרור את המסגרת, ערוך בפס למטה.'
-          : 'אין כרגע כלי עריכה פעיל.'
+          ? 'טקסט: הקלד על התמונה; גרירה מהפס העליון; עיצוב בפס למטה.'
+          : activeTool === 'shapes'
+            ? 'צורות: גרירה והגדלה; צבעי מילוי ומסגרת בפס הכלים.'
+            : 'אין כרגע כלי עריכה פעיל.'
 
   const usesExactBlurPreview = activeTool === 'blur' && !!processedPreviewSrc
   const previewImageSrc = usesExactBlurPreview ? processedPreviewSrc : baseImageSrc
@@ -3119,6 +3664,20 @@ function WatermarkEditorTab({
                   </button>
                   <button
                     type="button"
+                    className={`btn watermark-tool-icon-btn ${activeTool === 'shapes' ? 'primary' : ''}`}
+                    onClick={() => activateTool('shapes')}
+                    title="צורות"
+                    aria-label="צורות"
+                  >
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                      <path
+                        fill="currentColor"
+                        d="M5 5h8v8H5V5Zm10 0h4v4h-4V5ZM5 15h4v4H5v-4Zm10 0h4v4h-4v-4Zm-8 2h8v2H7v-2Z"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     className={`btn watermark-tool-icon-btn ${selectionShape === 'rect' ? 'primary' : ''}`}
                     onClick={() => setSelectionShape('rect')}
                     disabled={baseIsVideo}
@@ -3193,6 +3752,146 @@ function WatermarkEditorTab({
                         </div>
                       </>
                     )}
+                    {activeTool === 'shapes' && baseImageSize && (
+                      <div className="watermark-shapes-toolbar">
+                        <div className="watermark-shapes-toolbar-row watermark-shapes-actions">
+                          <button
+                            type="button"
+                            className="btn watermark-shape-icon-btn"
+                            onClick={() => {
+                              const s = createWatermarkShapeItem('rect', baseImageSize.width, baseImageSize.height)
+                              setShapeItems((prev) => [...prev, s])
+                              setSelectedShapeId(s.id)
+                            }}
+                            title="הוסף מלבן"
+                            aria-label="הוסף מלבן"
+                          >
+                            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                              <path
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                d="M5 5h14v14H5z"
+                              />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn watermark-shape-icon-btn"
+                            onClick={() => {
+                              const s = createWatermarkShapeItem('circle', baseImageSize.width, baseImageSize.height)
+                              setShapeItems((prev) => [...prev, s])
+                              setSelectedShapeId(s.id)
+                            }}
+                            title="הוסף עיגול"
+                            aria-label="הוסף עיגול"
+                          >
+                            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                              <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn watermark-shape-icon-btn watermark-shape-icon-btn-danger"
+                            disabled={!selectedShapeId}
+                            onClick={() => {
+                              if (!selectedShapeId) return
+                              setShapeItems((prev) => prev.filter((s) => s.id !== selectedShapeId))
+                              setSelectedShapeId(null)
+                            }}
+                            title="מחק צורה נבחרת"
+                            aria-label="מחק צורה נבחרת"
+                          >
+                            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                              <path
+                                fill="currentColor"
+                                d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6v9h2V9h-2Zm4 0v9h2V9h-2ZM7 7v12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V7H7Z"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                        {selectedShape && (
+                          <div className="watermark-shapes-toolbar-row watermark-shapes-style-row">
+                            <span className="watermark-shape-tool-label" title="מילוי">
+                              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                                <path
+                                  fill="currentColor"
+                                  d="M12 3 5 9v12h14V9l-7-6Zm0 2.2L17 10v9H7v-9l5-4.8Z"
+                                />
+                              </svg>
+                            </span>
+                            <input
+                              type="color"
+                              className="watermark-shape-color-input"
+                              value={selectedShape.fillColor.startsWith('#') ? selectedShape.fillColor : '#ffffff'}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setShapeItems((items) =>
+                                  items.map((s) => (s.id === selectedShape.id ? { ...s, fillColor: v } : s))
+                                )
+                              }}
+                              title="צבע מילוי"
+                              aria-label="צבע מילוי"
+                            />
+                            <span className="watermark-shape-tool-label" title="מסגרת">
+                              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                                <path
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  d="M5 5h14v14H5z"
+                                />
+                              </svg>
+                            </span>
+                            <input
+                              type="color"
+                              className="watermark-shape-color-input"
+                              value={selectedShape.strokeColor.startsWith('#') ? selectedShape.strokeColor : '#ffffff'}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setShapeItems((items) =>
+                                  items.map((s) => (s.id === selectedShape.id ? { ...s, strokeColor: v } : s))
+                                )
+                              }}
+                              title="צבע מסגרת"
+                              aria-label="צבע מסגרת"
+                            />
+                            <span className="watermark-shape-tool-label" title="עובי מסגרת">
+                              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                                <path
+                                  fill="currentColor"
+                                  d="M4 8h16v2H4V8Zm0 6h10v2H4v-2Zm0 6h16v2H4v-2Z"
+                                />
+                              </svg>
+                            </span>
+                            <input
+                              type="range"
+                              className="watermark-shape-stroke-range"
+                              min={0}
+                              max={WATERMARK_SHAPE_STROKE_MAX}
+                              step={1}
+                              value={Math.min(selectedShape.strokeWidth, WATERMARK_SHAPE_STROKE_MAX)}
+                              onChange={(e) => {
+                                const n = Number(e.target.value)
+                                setShapeItems((items) =>
+                                  items.map((s) => (s.id === selectedShape.id ? { ...s, strokeWidth: n } : s))
+                                )
+                              }}
+                              title="עובי מסגרת"
+                              aria-label="עובי מסגרת"
+                            />
+                            <span className="watermark-shape-stroke-value muted small">
+                              {watermarkShapeEffectiveStrokePx(
+                                selectedShape.strokeWidth,
+                                selectedShape.width,
+                                selectedShape.height
+                              )}
+                              px
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -3244,7 +3943,10 @@ function WatermarkEditorTab({
               </p>
             )}
             {activeTool === 'text' && (
-              <p className="muted small">גרור את מסגרת הטקסט; ערוך תוכן ועיצוב בפס מתחת לתצוגה.</p>
+              <p className="muted small">הקלד בתוך המסגרת על התמונה; גרור מהפס הצר למעלה; עיצוב בפס מתחת.</p>
+            )}
+            {activeTool === 'shapes' && (
+              <p className="muted small">גרור צורה; ידיות פינה לשינוי גודל; צבעי מילוי ומסגרת בפס הכלים.</p>
             )}
           </div>
         </div>
@@ -3253,19 +3955,21 @@ function WatermarkEditorTab({
           {showWatermarkStage ? (
             <div className="watermark-preview-media-col">
               <div className="watermark-stage">
-              {baseVideoUrl ? (
-                <video
-                  ref={baseVideoRef}
-                  src={baseVideoUrl}
-                  controls
-                  muted
-                  playsInline
-                  onLoadedMetadata={onBaseVideoMetadata}
-                  onLoadedData={updateStageSize}
-                />
-              ) : (
-                <img ref={baseImgRef} src={previewImageSrc!} alt="" onLoad={updateStageSize} />
-              )}
+                <div className="watermark-stage-media-wrap" ref={stageMediaWrapRef}>
+                  {baseVideoUrl ? (
+                    <video
+                      ref={baseVideoRef}
+                      src={baseVideoUrl}
+                      controls
+                      muted
+                      playsInline
+                      onLoadedMetadata={onBaseVideoMetadata}
+                      onLoadedData={updateStageSize}
+                    />
+                  ) : (
+                    <img ref={baseImgRef} src={previewImageSrc!} alt="" onLoad={updateStageSize} />
+                  )}
+                  <div className="watermark-stage-overlay-clip">
               {!baseIsVideo && activeTool === 'blur' && selectionShape === 'rect' && rectFeatherBandStyle && (
                 <div className="watermark-feather-band-rect" style={rectFeatherBandStyle} />
               )}
@@ -3319,6 +4023,45 @@ function WatermarkEditorTab({
                   />
                 </div>
               )}
+              {displayShapeOverlays.map(({ item, left, top, width, height, strokePx }) => (
+                <div
+                  key={item.id}
+                  className={`watermark-shape-overlay-item ${
+                    activeTool === 'shapes' && selectedShapeId === item.id ? 'selected' : ''
+                  }`}
+                  style={{
+                    left,
+                    top,
+                    width,
+                    height,
+                    borderRadius: item.kind === 'circle' ? '50%' : '10px',
+                    background: item.fillColor,
+                    border: strokePx > 0 ? `${strokePx}px solid ${item.strokeColor}` : 'none',
+                    boxSizing: 'border-box',
+                    pointerEvents: activeTool === 'shapes' ? 'auto' : 'none'
+                  }}
+                  onMouseDown={(e) => {
+                    if (activeTool !== 'shapes') return
+                    e.stopPropagation()
+                    startShapeDrag(e, item.id, 'move')
+                  }}
+                >
+                  {activeTool === 'shapes' && selectedShapeId === item.id &&
+                    textRectHandles.map((handle) => (
+                      <button
+                        key={handle}
+                        type="button"
+                        className={`watermark-crop-handle watermark-crop-handle-${handle} watermark-text-resize-handle`}
+                        title={`שנה גודל — ${WATERMARK_TEXT_HANDLE_LABEL[handle]}`}
+                        aria-label={`שנה גודל צורה — ${WATERMARK_TEXT_HANDLE_LABEL[handle]}`}
+                        onMouseDown={(e) => {
+                          e.stopPropagation()
+                          startShapeDrag(e, item.id, handle)
+                        }}
+                      />
+                    ))}
+                </div>
+              ))}
               {displayTextRect && textRect && activeTool === 'text' && (
                 <div
                   className="watermark-text-overlay-item"
@@ -3331,38 +4074,75 @@ function WatermarkEditorTab({
                     fontFamily: textStyle.fontFamily,
                     fontSize: Math.max(
                       8,
-                      (textStyle.fontSizePx * displayTextRect.width) / Math.max(1, textRect.width)
+                      textStyle.fontSizePx *
+                        Math.min(
+                          displayTextRect.width / Math.max(1, textRect.width),
+                          displayTextRect.height / Math.max(1, textRect.height)
+                        )
                     ),
                     fontWeight: textStyle.bold ? 700 : 400,
                     fontStyle: textStyle.italic ? 'italic' : 'normal',
                     direction: 'rtl'
                   }}
-                  onMouseDown={(e) => startTextDrag(e, 'move')}
                 >
-                  <div className="watermark-text-overlay-inner">{textContent || ' '}</div>
-                  <button
-                    type="button"
-                    className="watermark-resize-handle"
-                    title="שנה גודל מסגרת טקסט"
-                    aria-label="שנה גודל מסגרת טקסט"
-                    onMouseDown={(e) => startTextDrag(e, 'resize')}
+                  <div
+                    className="watermark-text-move-strip"
+                    title="גרור להזזת מסגרת הטקסט"
+                    onMouseDown={(e) => {
+                      e.stopPropagation()
+                      startTextDrag(e, 'move')
+                    }}
                   />
+                  {displayTextContentRect && previewTextLayerDataUrl && (
+                    <img
+                      className="watermark-text-preview-raster"
+                      alt=""
+                      draggable={false}
+                      src={previewTextLayerDataUrl}
+                      style={{
+                        left: displayTextContentRect.x,
+                        top: displayTextContentRect.y,
+                        width: displayTextContentRect.width,
+                        height: displayTextContentRect.height
+                      }}
+                    />
+                  )}
+                  <textarea
+                    className="watermark-text-overlay-textarea"
+                    ref={textAreaRef}
+                    dir="rtl"
+                    style={{
+                      textAlign: textStyle.textAlign,
+                      color: 'transparent',
+                      caretColor: textStyle.color
+                    }}
+                    value={textContent}
+                    onChange={(e) => setTextContent(e.target.value)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    placeholder="הקלד כאן…"
+                    spellCheck={false}
+                  />
+                  {textRectHandles.map((handle) => (
+                    <button
+                      key={handle}
+                      type="button"
+                      className={`watermark-crop-handle watermark-crop-handle-${handle} watermark-text-resize-handle`}
+                      title={`שנה גודל — ${WATERMARK_TEXT_HANDLE_LABEL[handle]}`}
+                      aria-label={`שנה גודל מסגרת טקסט — ${WATERMARK_TEXT_HANDLE_LABEL[handle]}`}
+                      onMouseDown={(e) => {
+                        e.stopPropagation()
+                        startTextDrag(e, handle)
+                      }}
+                    />
+                  ))}
                 </div>
               )}
+                  </div>
+                </div>
               </div>
               {activeTool === 'text' && showWatermarkStage && (
                 <div className="watermark-text-toolbar">
-                  <div className="watermark-text-toolbar-row">
-                    <label className="watermark-text-toolbar-label">תוכן</label>
-                    <textarea
-                      className="watermark-text-toolbar-textarea"
-                      dir="rtl"
-                      rows={2}
-                      value={textContent}
-                      onChange={(e) => setTextContent(e.target.value)}
-                      placeholder="הקלד טקסט…"
-                    />
-                  </div>
                   <div className="watermark-text-toolbar-row watermark-text-toolbar-controls">
                     <label className="watermark-text-toolbar-label tight">צבע</label>
                     <input
@@ -3371,17 +4151,50 @@ function WatermarkEditorTab({
                       onChange={(e) => setTextStyle((s) => ({ ...s, color: e.target.value }))}
                       title="צבע טקסט"
                     />
+                    <label className="watermark-text-toolbar-label tight">רקע</label>
+                    <input
+                      type="color"
+                      value={textStyle.backgroundColor.startsWith('#') ? textStyle.backgroundColor : '#000000'}
+                      onChange={(e) => setTextStyle((s) => ({ ...s, backgroundColor: e.target.value }))}
+                      title="רקע תיבת טקסט"
+                    />
+                    <button
+                      type="button"
+                      className="btn watermark-text-style-btn"
+                      onClick={() => setTextStyle((s) => ({ ...s, backgroundColor: 'transparent' }))}
+                      title="ללא רקע"
+                    >
+                      ∅
+                    </button>
                     <label className="watermark-text-toolbar-label tight">גודל</label>
                     <input
-                      type="range"
-                      min={12}
-                      max={96}
+                      type="number"
+                      className="watermark-text-fontsize-input"
+                      min={WATERMARK_TEXT_FONT_SIZE_MIN}
+                      step={1}
                       value={textStyle.fontSizePx}
-                      onChange={(e) =>
-                        setTextStyle((s) => ({ ...s, fontSizePx: Number(e.target.value) }))
-                      }
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        if (raw === '') return
+                        const n = parseInt(raw, 10)
+                        if (Number.isNaN(n)) return
+                        setTextStyle((s) => ({
+                          ...s,
+                          fontSizePx: Math.max(WATERMARK_TEXT_FONT_SIZE_MIN, n)
+                        }))
+                      }}
+                      onBlur={(e) => {
+                        const raw = e.target.value
+                        if (raw === '' || Number.isNaN(parseInt(raw, 10))) {
+                          setTextStyle((s) => ({
+                            ...s,
+                            fontSizePx: Math.max(WATERMARK_TEXT_FONT_SIZE_MIN, s.fontSizePx)
+                          }))
+                        }
+                      }}
+                      title="גודל גופן בפיקסלים (ללא תקרה)"
+                      aria-label="גודל גופן בפיקסלים"
                     />
-                    <span className="watermark-text-toolbar-num">{textStyle.fontSizePx}px</span>
                     <label className="watermark-text-toolbar-label tight">גופן</label>
                     <select
                       value={textStyle.fontFamily}
@@ -3409,6 +4222,56 @@ function WatermarkEditorTab({
                     >
                       <em>I</em>
                     </button>
+                    <span className="watermark-text-toolbar-divider" aria-hidden="true" />
+                    <div className="watermark-text-align-group" role="group" aria-label="יישור טקסט">
+                      <button
+                        type="button"
+                        className={`btn watermark-text-align-btn ${textStyle.textAlign === 'right' ? 'primary' : ''}`}
+                        title="יישור לימין"
+                        aria-label="יישור לימין"
+                        aria-pressed={textStyle.textAlign === 'right'}
+                        onClick={() => setTextStyle((s) => ({ ...s, textAlign: 'right' }))}
+                      >
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <g transform="translate(24 0) scale(-1 1)">
+                            <path
+                              fill="currentColor"
+                              d="M4 5L14 5L14 7L4 7ZM4 9L18 9L18 11L4 11ZM4 13L12 13L12 15L4 15ZM4 17L16 17L16 19L4 19Z"
+                            />
+                          </g>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn watermark-text-align-btn ${textStyle.textAlign === 'center' ? 'primary' : ''}`}
+                        title="יישור לאמצע"
+                        aria-label="יישור לאמצע"
+                        aria-pressed={textStyle.textAlign === 'center'}
+                        onClick={() => setTextStyle((s) => ({ ...s, textAlign: 'center' }))}
+                      >
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <path
+                            fill="currentColor"
+                            d="M7 5L17 5L17 7L7 7ZM5 9L19 9L19 11L5 11ZM6 13L18 13L18 15L6 15ZM7 17L17 17L17 19L7 19Z"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn watermark-text-align-btn ${textStyle.textAlign === 'left' ? 'primary' : ''}`}
+                        title="יישור לשמאל"
+                        aria-label="יישור לשמאל"
+                        aria-pressed={textStyle.textAlign === 'left'}
+                        onClick={() => setTextStyle((s) => ({ ...s, textAlign: 'left' }))}
+                      >
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <path
+                            fill="currentColor"
+                            d="M4 5L14 5L14 7L4 7ZM4 9L18 9L18 11L4 11ZM4 13L12 13L12 15L4 15ZM4 17L16 17L16 19L4 19Z"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

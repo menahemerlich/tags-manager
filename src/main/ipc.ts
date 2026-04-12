@@ -946,6 +946,7 @@ export function registerIpcHandlers(
         startSec: payload.startSec,
         endSec: payload.endSec,
         textOverlay: payload.textOverlay,
+        shapeOverlays: payload.shapeOverlays,
         onProgress: ({ percent }) => {
           if (event.sender.isDestroyed()) return
           event.sender.send(WATERMARK_VIDEO_EXPORT_PROGRESS, { percent })

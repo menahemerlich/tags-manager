@@ -221,14 +221,17 @@ export interface FacePersonProfile {
   lastUpdated: string
 }
 
-/** Raster text layer from renderer (PNG data URL); position in base-image pixels. */
-export interface WatermarkTextOverlayPayload {
+/** Raster layer from renderer (PNG data URL); position in base-image pixels. */
+export interface WatermarkRasterOverlayPayload {
   dataUrl: string
   x: number
   y: number
   width: number
   height: number
 }
+
+/** @deprecated Prefer WatermarkRasterOverlayPayload — same shape. */
+export type WatermarkTextOverlayPayload = WatermarkRasterOverlayPayload
 
 export interface WatermarkExportPayload {
   baseImagePath: string
@@ -250,7 +253,9 @@ export interface WatermarkExportPayload {
   blurFeather?: number
   focusSeparation?: number
   /** Optional text drawn in renderer as PNG; composited after watermark. */
-  textOverlay?: WatermarkTextOverlayPayload
+  textOverlay?: WatermarkRasterOverlayPayload
+  /** Optional shapes (rect/circle) as PNG layers; composited after text. */
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
 }
 
 export type SelectionShape = 'rect' | 'circle'
@@ -293,7 +298,8 @@ export interface WatermarkVideoExportPayload {
   opacity: number
   startSec: number
   endSec: number
-  textOverlay?: WatermarkTextOverlayPayload
+  textOverlay?: WatermarkRasterOverlayPayload
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
 }
 
 export type WatermarkExportResult =

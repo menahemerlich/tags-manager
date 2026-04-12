@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Jimp } from 'jimp'
-import type { WatermarkTextOverlayPayload } from '../shared/types'
+import type { WatermarkRasterOverlayPayload, WatermarkTextOverlayPayload } from '../shared/types'
 
 type JimpImage = Awaited<ReturnType<typeof Jimp.read>>
 
@@ -26,6 +26,7 @@ export interface WatermarkCompositeOptions {
   blurFeather?: number
   focusSeparation?: number
   textOverlay?: WatermarkTextOverlayPayload
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
 }
 
 export interface WatermarkPreviewOptions {
@@ -43,6 +44,27 @@ export interface WatermarkPreviewOptions {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+/** Composite text raster at (dstX, dstY) without shifting the layer; clip to destination bounds (WYSIWYG vs editor). */
+function compositeTextLayerClipped(dest: JimpImage, src: JimpImage, dstX: number, dstY: number): void {
+  const W = dest.bitmap.width
+  const H = dest.bitmap.height
+  const tw = src.bitmap.width
+  const th = src.bitmap.height
+  const dstXi = Math.round(dstX)
+  const dstYi = Math.round(dstY)
+  const clipLeft = Math.max(0, dstXi)
+  const clipTop = Math.max(0, dstYi)
+  const clipRight = Math.min(dstXi + tw, W)
+  const clipBottom = Math.min(dstYi + th, H)
+  const clipW = clipRight - clipLeft
+  const clipH = clipBottom - clipTop
+  if (clipW <= 0 || clipH <= 0) return
+  const srcX = clipLeft - dstXi
+  const srcY = clipTop - dstYi
+  const cropped = src.clone().crop({ x: srcX, y: srcY, w: clipW, h: clipH })
+  dest.composite(cropped, clipLeft, clipTop)
 }
 
 function applyFeatherSoftnessCurve(transition: number, softnessSlider: number | undefined): number {
@@ -368,12 +390,40 @@ export async function exportWatermarkedImage(options: WatermarkCompositeOptions)
     const textLayer = await readImageSource(textOv.dataUrl)
     const tw = Math.max(1, Math.round(textOv.width))
     const th = Math.max(1, Math.round(textOv.height))
-    const preparedText = textLayer.clone().resize({ w: tw, h: th })
-    const maxTx = Math.max(0, finalBase.bitmap.width - preparedText.bitmap.width)
-    const maxTy = Math.max(0, finalBase.bitmap.height - preparedText.bitmap.height)
-    const tx = clamp(Math.round(textOv.x) - offsetX, 0, maxTx)
-    const ty = clamp(Math.round(textOv.y) - offsetY, 0, maxTy)
-    finalBase.composite(preparedText, tx, ty)
+    const preparedText =
+      textLayer.bitmap.width === tw && textLayer.bitmap.height === th
+        ? (textLayer.clone() as JimpImage)
+        : (textLayer.clone().resize({ w: tw, h: th }) as JimpImage)
+    const tx0 = Math.round(textOv.x) - offsetX
+    const ty0 = Math.round(textOv.y) - offsetY
+    compositeTextLayerClipped(finalBase, preparedText, tx0, ty0)
+  }
+
+  const shapeOvs = options.shapeOverlays
+  if (Array.isArray(shapeOvs) && shapeOvs.length > 0) {
+    for (const sh of shapeOvs) {
+      if (
+        !sh ||
+        typeof sh.dataUrl !== 'string' ||
+        !sh.dataUrl.startsWith('data:image/') ||
+        typeof sh.width !== 'number' ||
+        typeof sh.height !== 'number' ||
+        sh.width <= 0 ||
+        sh.height <= 0
+      ) {
+        continue
+      }
+      const layer = await readImageSource(sh.dataUrl)
+      const sw = Math.max(1, Math.round(sh.width))
+      const shh = Math.max(1, Math.round(sh.height))
+      const preparedShape =
+        layer.bitmap.width === sw && layer.bitmap.height === shh
+          ? (layer.clone() as JimpImage)
+          : (layer.clone().resize({ w: sw, h: shh }) as JimpImage)
+      const sx0 = Math.round(sh.x) - offsetX
+      const sy0 = Math.round(sh.y) - offsetY
+      compositeTextLayerClipped(finalBase, preparedShape, sx0, sy0)
+    }
   }
 
   await finalBase.write(options.outputPath as `${string}.${string}`)

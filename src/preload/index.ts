@@ -166,7 +166,8 @@ const api = {
   },
   onWatermarkImageExportBusy: (cb: (p: { outputBaseName: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { outputBaseName: string }) => cb(payload)
-    ipcRenderer.on(WATERMARK_IMAGE_EXPORT_BUSY, handler)
+    // `once` avoids runaway work if a listener is ever leaked: each export gets at most one fire.
+    ipcRenderer.once(WATERMARK_IMAGE_EXPORT_BUSY, handler)
     return () => ipcRenderer.removeListener(WATERMARK_IMAGE_EXPORT_BUSY, handler)
   },
   showInFolder: (filePath: string) => ipcRenderer.invoke('shell:show-in-folder', filePath) as Promise<void>,

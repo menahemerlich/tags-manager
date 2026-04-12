@@ -6,7 +6,9 @@ import type { App } from 'electron'
 import ffmpeg from 'fluent-ffmpeg'
 import { Jimp } from 'jimp'
 import { locateMediaTools } from './services/media/ffmpegLocator'
-import type { WatermarkTextOverlayPayload } from '../shared/types'
+import type { WatermarkRasterOverlayPayload, WatermarkTextOverlayPayload } from '../shared/types'
+
+type JimpImage = Awaited<ReturnType<typeof Jimp.read>>
 
 export interface WatermarkVideoExportOptions {
   baseVideoPath: string
@@ -20,6 +22,7 @@ export interface WatermarkVideoExportOptions {
   startSec: number
   endSec: number
   textOverlay?: WatermarkTextOverlayPayload
+  shapeOverlays?: WatermarkRasterOverlayPayload[]
   onProgress?: (info: { percent: number }) => void
 }
 
@@ -91,7 +94,11 @@ export async function exportWatermarkedVideoSegment(app: App, opts: WatermarkVid
       const textImg = await Jimp.read(Buffer.from(b64, 'base64'))
       textW = Math.max(1, Math.round(textOv.width))
       textH = Math.max(1, Math.round(textOv.height))
-      const textPrepared = textImg.clone().resize({ w: textW, h: textH })
+      const textPrepared = (
+        textImg.bitmap.width === textW && textImg.bitmap.height === textH
+          ? textImg.clone()
+          : textImg.clone().resize({ w: textW, h: textH })
+      ) as JimpImage
       tmpTextPng = join(tmpdir(), `tags-wm-txt-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
       writeFileSync(tmpTextPng, await textPrepared.getBuffer('image/png'))
       txi = Math.round(textOv.x)
@@ -101,16 +108,84 @@ export async function exportWatermarkedVideoSegment(app: App, opts: WatermarkVid
     }
   }
 
+  type PreparedShape = { path: string; w: number; h: number; x: number; y: number }
+  const shapeTmpFiles: string[] = []
+  const preparedShapes: PreparedShape[] = []
+  for (const sh of opts.shapeOverlays ?? []) {
+    if (
+      !sh ||
+      typeof sh.dataUrl !== 'string' ||
+      !sh.dataUrl.startsWith('data:image/') ||
+      typeof sh.width !== 'number' ||
+      typeof sh.height !== 'number' ||
+      sh.width <= 0 ||
+      sh.height <= 0
+    ) {
+      continue
+    }
+    try {
+      const b64 = sh.dataUrl.split(',')[1] ?? ''
+      const img = await Jimp.read(Buffer.from(b64, 'base64'))
+      const sw = Math.max(1, Math.round(sh.width))
+      const shh = Math.max(1, Math.round(sh.height))
+      const prep =
+        img.bitmap.width === sw && img.bitmap.height === shh
+          ? (img.clone() as JimpImage)
+          : (img.clone().resize({ w: sw, h: shh }) as JimpImage)
+      const p = join(tmpdir(), `tags-wm-shp-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
+      writeFileSync(p, await prep.getBuffer('image/png'))
+      shapeTmpFiles.push(p)
+      preparedShapes.push({
+        path: p,
+        w: sw,
+        h: shh,
+        x: Math.round(sh.x),
+        y: Math.round(sh.y)
+      })
+    } catch {
+      // skip bad shape
+    }
+  }
+
   try {
     await new Promise<void>((resolve, reject) => {
       const chain = ffmpeg(opts.baseVideoPath).inputOptions(['-ss', String(start), '-to', String(end)]).input(tmpPng)
-      let filter: string
-      if (tmpTextPng) {
-        chain.input(tmpTextPng)
-        filter = `[1:v]scale=${tw}:${th}[wm];[0:v][wm]overlay=${xi}:${yi}:format=auto[v1];[2:v]scale=${textW}:${textH}[tx];[v1][tx]overlay=${txi}:${tyi}:format=auto[outv]`
-      } else {
-        filter = `[1:v]scale=${tw}:${th}[wm];[0:v][wm]overlay=${xi}:${yi}:format=auto[outv]`
+      if (tmpTextPng) chain.input(tmpTextPng)
+      for (const s of preparedShapes) {
+        chain.input(s.path)
       }
+
+      const parts: string[] = []
+      let stream = '0:v'
+      let inputIdx = 1
+
+      parts.push(`[${inputIdx}:v]scale=${tw}:${th}[wm]`)
+      parts.push(`[${stream}][wm]overlay=${xi}:${yi}:format=auto[wmout]`)
+      stream = 'wmout'
+      inputIdx += 1
+
+      if (tmpTextPng) {
+        parts.push(`[${inputIdx}:v]scale=${textW}:${textH}[tx]`)
+        parts.push(`[${stream}][tx]overlay=${txi}:${tyi}:format=auto[txout]`)
+        stream = 'txout'
+        inputIdx += 1
+      }
+
+      preparedShapes.forEach((s, i) => {
+        const last = i === preparedShapes.length - 1
+        parts.push(`[${inputIdx}:v]scale=${s.w}:${s.h}[sh${i}]`)
+        parts.push(`[${stream}][sh${i}]overlay=${s.x}:${s.y}:format=auto[${last ? 'outv' : `sh${i}out`}]`)
+        stream = last ? 'outv' : `sh${i}out`
+        inputIdx += 1
+      })
+
+      if (!tmpTextPng && preparedShapes.length === 0) {
+        parts[parts.length - 1] = parts[parts.length - 1].replace('[wmout]', '[outv]')
+      } else if (tmpTextPng && preparedShapes.length === 0) {
+        parts[parts.length - 1] = parts[parts.length - 1].replace('[txout]', '[outv]')
+      }
+
+      const filter = parts.join(';')
       chain
         .complexFilter(filter)
         .outputOptions([
@@ -165,6 +240,13 @@ export async function exportWatermarkedVideoSegment(app: App, opts: WatermarkVid
     if (tmpTextPng) {
       try {
         unlinkSync(tmpTextPng)
+      } catch {
+        // ignore
+      }
+    }
+    for (const p of shapeTmpFiles) {
+      try {
+        unlinkSync(p)
       } catch {
         // ignore
       }
