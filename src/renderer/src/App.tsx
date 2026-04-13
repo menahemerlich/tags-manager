@@ -1,4 +1,4 @@
-import {
+﻿import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -33,6 +33,11 @@ import { AppFooter } from './app/AppFooter'
 import { AppMainPanels } from './app/AppMainPanels'
 import { transferProgressPercentFromStage } from './app/transferProgressUi'
 import type { SettingsView } from './app/panels/SettingsTabPanel'
+import { applySearchResultClientFilters } from './pages/Search/applySearchResultClientFilters'
+import {
+  createEmptySearchResultShapeSelection,
+  type SearchResultShapeId
+} from './pages/Search/searchResultShapeFilter'
 
 
 /** שורש האפליקציה: ניווט טאבים, ספרייה, חיפוש, תגיות, הגדרות, פרצופים וסימן מים */
@@ -62,6 +67,10 @@ export default function App() {
   const [searchSelected, setSearchSelected] = useState<string[]>([])
   const [searchDraft, setSearchDraft] = useState('')
   const [searchScope, setSearchScope] = useState<string | null>(null)
+  /** סינון תוצאות חיפוש: תיקיות / תמונות / וידאו / מסמכים / אחר (ריק = הכל). */
+  const [searchContentFilterSelection, setSearchContentFilterSelection] = useState<
+    Set<SearchResultShapeId>
+  >(() => createEmptySearchResultShapeSelection())
   const [searchResults, setSearchResults] = useState<SearchResultRow[]>([])
   const [searchTruncated, setSearchTruncated] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
@@ -297,13 +306,30 @@ export default function App() {
     return () => window.removeEventListener('tags-manager:user-data-reloaded', onUserDataReloaded)
   }, [refreshTagFolders, refreshTags, runSearch])
 
-  const searchResultsFiltered = useMemo(() => {
-    if (!searchScope) return searchResults
-    const base = searchScope.replace(/[/\\]+$/, '')
-    const sep = searchScope.includes('\\') ? '\\' : '/'
-    const prefix = base + sep
-    return searchResults.filter((r) => r.path === base || r.path.startsWith(prefix))
-  }, [searchResults, searchScope])
+  const toggleSearchContentShape = useCallback((id: SearchResultShapeId) => {
+    setSearchContentFilterSelection((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+        return next
+      }
+      if (id === 'folders') {
+        return new Set<SearchResultShapeId>(['folders'])
+      }
+      next.delete('folders')
+      next.add(id)
+      return next
+    })
+  }, [])
+
+  const searchResultsFiltered = useMemo(
+    () =>
+      applySearchResultClientFilters(searchResults, {
+        scopePath: searchScope,
+        contentShapes: searchContentFilterSelection
+      }),
+    [searchResults, searchScope, searchContentFilterSelection]
+  )
 
   function addToSearchQuery() {
     const n = normalizeTagName(searchDraft)
@@ -704,6 +730,8 @@ export default function App() {
         search={{
           searchScope,
           setSearchScope,
+          searchContentFilterSelection,
+          toggleSearchContentShape,
           searchDraft,
           setSearchDraft,
           searchSelected,

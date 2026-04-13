@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react'
 import type { ImportConflictChoice, TagImportPreview, TransferPackageProgress } from '../../../../shared/types'
+import { AboutAppHelpPanel } from '../../pages/Settings/AboutAppHelpPanel'
 import UpdateSection from '../../pages/Settings/UpdateSection'
 
 export type SettingsView = 'updates' | 'io' | 'transfer' | 'about'
@@ -110,6 +111,7 @@ export function SettingsTabPanel({
             <div className="toolbar" style={{ marginBottom: '0.5rem' }}>
               <input
                 readOnly
+                className="path-ltr-isolate"
                 style={{ flex: 1, minWidth: 220, background: 'rgba(26, 26, 46, 0.6)' }}
                 value={tagIoScopePath ?? 'לא נבחר תחום'}
                 title={tagIoScopePath ?? ''}
@@ -298,25 +300,7 @@ export function SettingsTabPanel({
         </>
       )}
 
-      {settingsView === 'about' && (
-        <>
-          <p className="muted small">
-            <strong>ספרייה:</strong> בחרו קבצים/תיקיות, הוסיפו תגיות, ואז לחצו <strong>שמור וסיים</strong>. התגים נשמרים
-            מקומית לצורך חיפוש.
-          </p>
-          <p className="muted small">
-            <strong>חיפוש:</strong> בחרו תגיות — יוצגו רק <strong>קבצים</strong> שמכילים <strong>את כל</strong> התגיות. ניתן
-            לצמצם לנתיב/כונן מסוים. לחיצה על שורה פותחת את הקובץ, ו־<strong>ערוך</strong> מאפשר לשנות תגיות.
-          </p>
-          <p className="muted small">
-            <strong>תגיות:</strong> אפשר לשנות שם לתגית או למחוק אותה (זה ישפיע על כל המערכת).
-          </p>
-          <p className="muted small" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-            <strong>ייבוא/ייצוא:</strong> לשונית זו מאפשרת לייצא תגיות לקובץ JSON לפי תחום, ואז לייבא בחזרה. בעת ייבוא מוצג
-            preview עם התנגשויות, כדי שתוכלו לבחור מה לעשות לפני שהשינויים מוחלים.
-          </p>
-        </>
-      )}
+      {settingsView === 'about' && <AboutAppHelpPanel />}
     </section>
   )
 }

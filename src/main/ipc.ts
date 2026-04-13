@@ -438,23 +438,42 @@ export function registerIpcHandlers(
 
       try {
         for (const item of payload.items) {
-          const p = normalizePath(item.path)
+          const raw = sanitizePathInput(item.path)
+          if (!raw) throw new Error('נתיב ריק')
+          const p = normalizePath(raw)
+          if (item.kind !== 'file' && item.kind !== 'folder') {
+            throw new Error('סוג פריט לא תקין')
+          }
           if (item.kind === 'file') {
-            db.setPathTags(p, payload.tagNames)
+            db.setPathTags(p, payload.tagNames, 'file')
           } else {
+            /** מחוץ ל־bulk: שמירת התיקייה והתגיות מתבצעת בלי אותו transaction של האינדוקס (מניעת אובדן/בלבול מצב). */
+            db.setPathTags(p, payload.tagNames, 'folder')
+            db.persistNow()
             db.beginBulkMode()
             try {
-              db.upsertPath(p, 'folder')
-              db.setPathTags(p, payload.tagNames)
               await indexFolderFiles(
                 { folderPath: p, signal, onProgress: (prog) => sendProgress(win?.webContents, prog) },
                 (filePath) => {
-                  db.upsertPath(filePath, 'file')
+                  const nf = normalizePath(filePath)
+                  /** מונע דריסת שורת התיקייה ל־`file` אם נתיב הקובץ מזוהה בטעות עם שורש התיקייה. */
+                  if (nf === p) return
+                  db.upsertPath(nf, 'file')
                 }
               )
             } finally {
               db.endBulkMode()
             }
+            try {
+              /** אם שורת הנתיב סומנה בטעות כקובץ, מחזירים `folder` כדי שחיפוש/סינון תיקיות יעבדו. */
+              if (existsSync(p) && statSync(p).isDirectory()) {
+                db.upsertPath(p, 'folder')
+              }
+            } catch {
+              /* נתיב לא זמין — לא חוסמים שמירה */
+            }
+            db.setPathTags(p, payload.tagNames, 'folder')
+            db.persistNow()
           }
         }
         return { ok: true as const }
@@ -472,7 +491,9 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('paths:list', async () => {
-    return getDb().listUserVisiblePathsWithDirectTags()
+    const rows = getDb().listUserVisiblePathsWithDirectTags()
+    /** נתיב אחיד (ניקוי bidi/NFC/מפרידים) כדי שלא יישבר עם עברית ב־RTL. */
+    return rows.map((r) => ({ ...r, path: normalizePath(r.path) }))
   })
 
   ipcMain.handle('paths:get-tags', async (_e, path: string) => {
@@ -798,7 +819,7 @@ export function registerIpcHandlers(
       properties: ['openFile', 'multiSelections']
     })
     if (r.canceled || r.filePaths.length === 0) return null
-    return r.filePaths.map((fp) => ({ path: fp, kind: 'file' as PathKind }))
+    return r.filePaths.map((fp) => ({ path: normalizePath(fp), kind: 'file' as PathKind }))
   })
 
   ipcMain.handle('dialog:pick-folders', async () => {
@@ -808,7 +829,7 @@ export function registerIpcHandlers(
       properties: ['openDirectory', 'multiSelections']
     })
     if (r.canceled || r.filePaths.length === 0) return null
-    return r.filePaths.map((fp) => ({ path: fp, kind: 'folder' as PathKind }))
+    return r.filePaths.map((fp) => ({ path: normalizePath(fp), kind: 'folder' as PathKind }))
   })
 
   ipcMain.handle('dialog:pick-folder', async () => {
@@ -818,7 +839,7 @@ export function registerIpcHandlers(
       properties: ['openDirectory']
     })
     if (r.canceled || r.filePaths.length === 0) return null
-    return r.filePaths[0] as string
+    return normalizePath(r.filePaths[0] as string)
   })
 
   ipcMain.handle('dialog:pick-image', async () => {

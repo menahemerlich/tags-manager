@@ -92,7 +92,9 @@ export interface PathRow {
 
 export interface SearchResultRow {
   path: string
-  kind: 'file'
+  /** Windows: מפתח בלי אות כונן לסינון תחום ולפתרון נתיב תחת הכונן הנוכחי. */
+  pathDriveless?: string | null
+  kind: PathKind
   tags: string[]
 }
 

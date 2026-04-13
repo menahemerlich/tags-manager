@@ -44,6 +44,7 @@ app.whenReady().then(async () => {
   registerLocalResourceProtocol(app)
   const dbPath = join(app.getPath('userData'), 'tags-manager.sqlite')
   db = await TagDatabase.open(dbPath)
+  db.repairStoredPathStrings()
   registerIpcHandlers(
     app,
     () => {

@@ -4,7 +4,7 @@ import { statSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { App } from 'electron'
-import ffmpeg from 'fluent-ffmpeg'
+import ffmpeg, { type FfprobeData } from 'fluent-ffmpeg'
 import { Jimp } from 'jimp'
 import { locateMediaTools } from './ffmpegLocator'
 import { FfmpegQueue } from './ffmpegQueue'
@@ -114,14 +114,16 @@ export class ThumbnailService {
     const nw = Math.max(1, Math.round(w * scale))
     const nh = Math.max(1, Math.round(h * scale))
     const scaled = nw === w && nh === h ? img : img.clone().resize({ w: nw, h: nh })
-    const buf = await scaled.getBuffer('image/jpeg', { quality: 80 })
+    /** תמונה לפלט JPEG — cast מבוקר כדי לעקוף איחוד טיפוסים של `getBuffer` בגרסת Jimp הנוכחית. */
+    const jpegSource = scaled as unknown as { getBuffer: (mime: 'image/jpeg', opts?: { quality?: number }) => Promise<Buffer> }
+    const buf = await jpegSource.getBuffer('image/jpeg', { quality: 80 })
     await writeFile(outJpgPath, buf)
   }
 
   private async generateVideoThumb(filePath: string, outJpgPath: string): Promise<void> {
     // Extract one frame roughly from the middle. We do a fast approximation using ffprobe duration.
     const durationSec = await new Promise<number>((resolve) => {
-      ffmpeg.ffprobe(filePath, (err, meta) => {
+      ffmpeg.ffprobe(filePath, (err: Error | null, meta: FfprobeData) => {
         if (err) return resolve(0)
         const d = Number(meta?.format?.duration ?? 0)
         resolve(Number.isFinite(d) ? d : 0)
@@ -139,7 +141,7 @@ export class ThumbnailService {
         ])
         .output(outJpgPath)
         .on('end', () => resolve())
-        .on('error', (err) => reject(err))
+        .on('error', (err: Error) => reject(err))
         .run()
     })
   }

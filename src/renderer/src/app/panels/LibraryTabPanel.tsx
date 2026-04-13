@@ -74,16 +74,18 @@ export function LibraryTabPanel({
           </p>
           <ul className="path-list" style={{ marginBottom: '1rem' }}>
             {librarySelectedItems.map((item) => (
-              <li key={item.path} className="path-cell">
+              <li key={item.path}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
                   <FilePreview
                     key={item.path}
                     filePath={item.path}
+                    pathKind={item.kind}
                     onOpenInWatermark={onOpenInWatermark}
                     onOpenInFaces={onOpenInFaces}
                   />
                   <span>
-                    {item.path} <span className="muted">({kindHe(item.kind)})</span>
+                    <span className="path-cell">{item.path}</span>{' '}
+                    <span className="muted">({kindHe(item.kind)})</span>
                   </span>
                 </span>
               </li>
