@@ -1,15 +1,18 @@
 import path from 'node:path'
 
 /**
- * Removes invisible characters that break `path.resolve` / `fs` on Windows (e.g. RTL embedding
- * before `C:\` makes Node treat the path as relative and prepend cwd). Also BOM and line breaks.
- * Use before `normalizePath` for any path coming from UI, IPC, or SQLite.
+ * מנקה תווים בלתי נראים ששוברים ניתוב (במיוחד עם UI בעברית/RTL):
+ * - סימוני כיוון (RLM/LRM/embeddings) שגורמים ל־`path.resolve` לראות נתיב יחסי ב־Windows
+ * - רווח רוחב אפס U+200B שנכנס מעתיקה מדפדפן/צ'אט
+ * - BOM ושורות חדשות
+ * תמיד להריץ לפני `normalizePath` על כל נתיב מ־UI, IPC או SQLite.
  */
 export function sanitizePathInput(p: string): string {
   if (typeof p !== 'string') return ''
   return p
     .replace(/\uFEFF/g, '')
-    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/\u200B/g, '')
+    .replace(/[\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069]/g, '')
     .replace(/[\r\n]/g, '')
     .normalize('NFC')
     .trim()
@@ -28,13 +31,21 @@ function fixWindowsDriveLetterPath(input: string): string {
   return n
 }
 
-/** Stable absolute path for DB keys and comparisons (Windows: preserve drive casing from input). */
+/**
+ * נתיב מוחלט יציב למפתחות DB והשוואות.
+ * תמיד עובר דרך `sanitizePathInput` (מונע ערבוב RTL/עברית ששובר את סדר התווים הלוגי לפני resolve).
+ * ב־Windows מאחד `/` ל־`\\` אחרי normalize כדי שהשוואות מחרוזות יהיו עקביות.
+ */
 export function normalizePath(p: string): string {
-  const trimmed = p.trim()
-  if (!trimmed) return '.'
-  const prepared = fixWindowsDriveLetterPath(trimmed)
+  const cleaned = sanitizePathInput(p)
+  if (!cleaned) return '.'
+  const prepared = fixWindowsDriveLetterPath(cleaned)
   const resolved = path.resolve(prepared)
-  return path.normalize(resolved)
+  let out = path.normalize(resolved)
+  if (process.platform === 'win32') {
+    out = out.replace(/\//g, '\\')
+  }
+  return out
 }
 
 /**
@@ -91,4 +102,86 @@ export function isFolderAncestorOfFile(folderPath: string, filePath: string): bo
   if (f === folder) return false
   const prefix = folder.endsWith(sep) ? folder : folder + sep
   return f.startsWith(prefix)
+}
+
+/**
+ * Windows: stable key without drive letter for `X:\...` paths (`\lib\a.jpg`, lowercase).
+ * UNC, extended paths that are not `\\?\X:\`, and non-Windows → `null` (use full absolute path as key).
+ */
+export function pathDrivelessKey(absolutePath: string): string | null {
+  const norm = normalizePath(absolutePath)
+  return pathDrivelessKeyNormalized(norm)
+}
+
+/** Like `pathDrivelessKey` but skips `normalizePath` when the caller already normalized. */
+export function pathDrivelessKeyNormalized(normalizedAbsPath: string): string | null {
+  if (process.platform !== 'win32') return null
+  let p = normalizedAbsPath.replace(/\//g, '\\')
+  if (p.startsWith('\\\\?\\UNC\\')) return null
+  if (p.startsWith('\\\\?\\')) {
+    const rest = p.slice(4)
+    if (/^[A-Za-z]:\\/.test(rest)) p = rest
+    else return null
+  }
+  if (p.startsWith('\\\\')) return null
+  const m = /^([A-Za-z]):\\(.*)$/.exec(p)
+  if (!m) return null
+  const tail = m[2]
+  const unified = tail.replace(/\//g, '\\').toLowerCase()
+  return '\\' + unified
+}
+
+/**
+ * Parent directory keys for a driveless key (Windows `\`-rooted), for tag inheritance.
+ * Example: `\lib\a\b.txt` → `[\lib\a`, `\lib`, `\`] (same order style as walking up from parent).
+ */
+export function ancestorDrivelessDirs(drivelessKey: string | null): string[] {
+  if (!drivelessKey) return []
+  const out: string[] = []
+  let d = path.win32.dirname(drivelessKey)
+  while (true) {
+    if (d === '\\') {
+      out.push('\\')
+      break
+    }
+    out.push(d)
+    const parent = path.win32.dirname(d)
+    if (parent === d) break
+    d = parent
+  }
+  return out
+}
+
+/** Whether `itemDriveless` is the scope folder/file itself or nested under `scopeDriveless`. */
+export function drivelessItemUnderScope(itemDriveless: string, scopeDriveless: string): boolean {
+  if (scopeDriveless === '\\') {
+    return itemDriveless !== '\\' && itemDriveless.startsWith('\\')
+  }
+  return itemDriveless === scopeDriveless || itemDriveless.startsWith(scopeDriveless + '\\')
+}
+
+/**
+ * Rebuild absolute path under the chosen scope when DB `path` may still use an old drive letter.
+ */
+export function resolvePathForSearchScope(
+  scopePath: string,
+  storedAbsolutePath: string,
+  itemDriveless: string | null
+): string {
+  const scopeNorm = normalizePath(scopePath).replace(/[/\\]+$/, '')
+  const sk = pathDrivelessKeyNormalized(scopeNorm)
+  if (!itemDriveless || !sk) return storedAbsolutePath
+  if (!drivelessItemUnderScope(itemDriveless, sk)) return storedAbsolutePath
+  if (itemDriveless === sk) return scopeNorm
+  const prefix = sk === '\\' ? '\\' : sk + '\\'
+  const tail =
+    sk === '\\'
+      ? itemDriveless.replace(/^\\/, '')
+      : itemDriveless.startsWith(prefix)
+        ? itemDriveless.slice(prefix.length)
+        : null
+  if (tail === null) return storedAbsolutePath
+  const parts = tail.split(/\\+/).filter(Boolean)
+  if (parts.length === 0) return scopeNorm
+  return normalizePath(path.join(scopeNorm, ...parts))
 }

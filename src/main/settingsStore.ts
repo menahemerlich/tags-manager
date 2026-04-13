@@ -11,7 +11,8 @@ function normalizeSyncSettings(input: unknown): AppSettings['sync'] {
   if (!input || typeof input !== 'object') return {}
   const sync = input as Record<string, unknown>
   const byTableRaw = (sync.lastSupabasePushAtByTable ?? null) as unknown
-  const lastSupabasePushAtByTable =
+  /** מפה של חותמות זמן לפי טבלה — רק ערכי מחרוזת תקינים. */
+  const lastSupabasePushAtByTableRaw =
     byTableRaw && typeof byTableRaw === 'object' && !Array.isArray(byTableRaw)
       ? Object.fromEntries(
           Object.entries(byTableRaw as Record<string, unknown>).filter(
@@ -19,6 +20,8 @@ function normalizeSyncSettings(input: unknown): AppSettings['sync'] {
           )
         )
       : undefined
+  /** גרסה מוקלדת לטיפוס המדויק של `SyncSettings` (מונע `unknown` בשדות אופציונליים). */
+  const lastSupabasePushAtByTable = lastSupabasePushAtByTableRaw as Record<string, string> | undefined
   return {
     supabaseUrl: typeof sync.supabaseUrl === 'string' ? sync.supabaseUrl : undefined,
     supabaseAnonKey: typeof sync.supabaseAnonKey === 'string' ? sync.supabaseAnonKey : undefined,

@@ -4,7 +4,14 @@ import { dirname, join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import initSqlJs from 'sql.js'
 import type { Database } from 'sql.js'
-import { ancestorDirsOfFile, isFolderAncestorOfFile, normalizePath } from '../shared/pathUtils'
+import {
+  ancestorDirsOfFile,
+  ancestorDrivelessDirs,
+  drivelessItemUnderScope,
+  isFolderAncestorOfFile,
+  normalizePath,
+  pathDrivelessKey
+} from '../shared/pathUtils'
 import { normalizeTagName } from '../shared/tagNormalize'
 import type {
   ImportConflictChoice,
@@ -193,6 +200,44 @@ export class TagDatabase {
   }
 
   /**
+   * מתאים את עמודת `paths.path` ל־`normalizePath` (ניקוי bidi, NFC, מפרידים ב־Windows).
+   * פותר נתיבים שנשמרו כשתווי RTL שיבשו את הסדר הלוגי מול חיפוש ו־fs.
+   */
+  repairStoredPathStrings(): { updated: number } {
+    let updated = 0
+    const stmt = this.db.prepare(`SELECT id, path FROM paths WHERE deleted_at IS NULL`)
+    const rows: { id: number; path: string }[] = []
+    while (stmt.step()) {
+      const r = stmt.get()
+      rows.push({ id: r[0] as number, path: r[1] as string })
+    }
+    stmt.free()
+    for (const { id, path: oldPath } of rows) {
+      const fixed = normalizePath(oldPath)
+      if (fixed === oldPath) continue
+      const clash = this.db.prepare(`SELECT id FROM paths WHERE path = ? AND deleted_at IS NULL`)
+      clash.bind([fixed])
+      let other: number | undefined
+      if (clash.step()) other = clash.get()[0] as number
+      clash.free()
+      if (other !== undefined && other !== id) continue
+      if (this.pathsTableHasColumn('path_driveless')) {
+        const dl = pathDrivelessKey(fixed)
+        this.db.run(`UPDATE paths SET path = ?, path_driveless = ?, updated_at = datetime('now') WHERE id = ?`, [
+          fixed,
+          dl,
+          id
+        ])
+      } else {
+        this.db.run(`UPDATE paths SET path = ?, updated_at = datetime('now') WHERE id = ?`, [fixed, id])
+      }
+      updated += 1
+    }
+    if (updated > 0) this.schedulePersist()
+    return { updated }
+  }
+
+  /**
    * Call after tags-manager.sqlite was replaced on disk (e.g. sync pull). Reloads sql.js state
    * without flushing stale in-memory data onto the new file.
    */
@@ -211,6 +256,7 @@ export class TagDatabase {
     }
     this.db.run('PRAGMA foreign_keys = ON')
     this.initSchema()
+    this.repairStoredPathStrings()
   }
 
   close(): void {
@@ -321,7 +367,147 @@ export class TagDatabase {
     `)
     this.ensureFaceEmbeddingSchema()
     migrateSyncSchema(this.db)
+    this.ensurePathsPathDrivelessSchema()
     this.schedulePersist()
+  }
+
+  private pathsTableHasColumn(columnName: string): boolean {
+    const cols = this.db.exec('PRAGMA table_info(paths)')
+    const names = new Set<string>()
+    for (const row of cols[0]?.values ?? []) {
+      if (typeof row[1] === 'string') names.add(row[1])
+    }
+    return names.has(columnName)
+  }
+
+  /**
+   * מפתח יציב בלי אות כונן (Windows), מילוי לאחור, איחוד כפילויות, ואינדקס ייחודי חלקי.
+   */
+  private ensurePathsPathDrivelessSchema(): void {
+    if (!this.pathsTableHasColumn('path_driveless')) {
+      this.db.run('ALTER TABLE paths ADD COLUMN path_driveless TEXT')
+    }
+    this.backfillPathsPathDriveless()
+    if (process.platform === 'win32') {
+      this.mergeDuplicatePathDrivelessRows()
+      try {
+        this.db.run(
+          `CREATE UNIQUE INDEX IF NOT EXISTS idx_paths_path_driveless_alive
+           ON paths(path_driveless) WHERE deleted_at IS NULL AND path_driveless IS NOT NULL`
+        )
+      } catch {
+        // אם נשארו כפילויות נדירות — לא לשבור את האתחול
+      }
+    }
+  }
+
+  private backfillPathsPathDriveless(): void {
+    const stmt = this.db.prepare(`SELECT id, path, path_driveless FROM paths WHERE deleted_at IS NULL`)
+    const rows: { id: number; path: string; path_driveless: string | null }[] = []
+    while (stmt.step()) {
+      const r = stmt.get()
+      rows.push({ id: r[0] as number, path: r[1] as string, path_driveless: (r[2] as string | null) ?? null })
+    }
+    stmt.free()
+    for (const { id, path: rawPath, path_driveless: existing } of rows) {
+      const fixed = normalizePath(rawPath)
+      const dl = pathDrivelessKey(fixed)
+      if (dl === existing || (dl === null && existing === null)) continue
+      this.db.run(`UPDATE paths SET path_driveless = ? WHERE id = ?`, [dl, id])
+    }
+  }
+
+  /** מאחד שורות paths עם אותו path_driveless (אחרי החלפת אות כונן). */
+  private mergeDuplicatePathDrivelessRows(): void {
+    const stmt = this.db.prepare(
+      `SELECT id, path, path_driveless, updated_at FROM paths WHERE deleted_at IS NULL AND path_driveless IS NOT NULL`
+    )
+    const byDl = new Map<string, { id: number; path: string; updated_at: string | null }[]>()
+    while (stmt.step()) {
+      const r = stmt.get()
+      const id = r[0] as number
+      const p = r[1] as string
+      const dl = r[2] as string
+      const updatedAt = r[3] as string | null
+      const list = byDl.get(dl) ?? []
+      list.push({ id, path: p, updated_at: updatedAt })
+      byDl.set(dl, list)
+    }
+    stmt.free()
+    for (const [dlKey, group] of byDl) {
+      if (group.length < 2) continue
+      group.sort((a, b) => {
+        const ta = a.updated_at ?? ''
+        const tb = b.updated_at ?? ''
+        if (ta !== tb) return tb.localeCompare(ta)
+        return b.id - a.id
+      })
+      const keeper = group[0]!
+      const losers = group.slice(1)
+      for (const loser of losers) {
+        this.mergePathAssociationsIntoKeeper(loser.id, keeper.id)
+        this.tombstonePathRowById(loser.id, loser.path)
+      }
+      const kPath = normalizePath(keeper.path)
+      this.db.run(`UPDATE paths SET path = ?, path_driveless = ?, updated_at = datetime('now') WHERE id = ?`, [
+        kPath,
+        dlKey,
+        keeper.id
+      ])
+    }
+  }
+
+  private mergePathAssociationsIntoKeeper(fromPathId: number, toPathId: number): void {
+    if (fromPathId === toPathId) return
+    const tagStmt = this.db.prepare(
+      `SELECT tag_id FROM path_tags WHERE path_id = ? AND deleted_at IS NULL`
+    )
+    tagStmt.bind([fromPathId])
+    const tagIds: number[] = []
+    while (tagStmt.step()) {
+      tagIds.push(tagStmt.get()[0] as number)
+    }
+    tagStmt.free()
+    for (const tagId of tagIds) {
+      this.addTagToPath(toPathId, tagId)
+    }
+    this.db.run(
+      `UPDATE path_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND deleted_at IS NULL`,
+      [fromPathId]
+    )
+    const exStmt = this.db.prepare(
+      `SELECT tag_id FROM path_tag_exclusions WHERE path_id = ? AND deleted_at IS NULL`
+    )
+    exStmt.bind([fromPathId])
+    const exIds: number[] = []
+    while (exStmt.step()) {
+      exIds.push(exStmt.get()[0] as number)
+    }
+    exStmt.free()
+    for (const tagId of exIds) {
+      this.addExclusionToPath(toPathId, tagId)
+    }
+    this.db.run(
+      `UPDATE path_tag_exclusions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND deleted_at IS NULL`,
+      [fromPathId]
+    )
+  }
+
+  private tombstonePathRowById(pathId: number, absPath: string): void {
+    const st = this.db.prepare(`SELECT uuid FROM paths WHERE id = ?`)
+    st.bind([pathId])
+    if (!st.step()) {
+      st.free()
+      return
+    }
+    const u = String(st.get()[0] ?? randomUUID())
+    st.free()
+    const p = normalizePath(absPath)
+    const tombstone = `${p}::__deleted__${u.slice(0, 8)}`
+    this.db.run(
+      `UPDATE paths SET path = ?, path_driveless = NULL, deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      [tombstone, pathId]
+    )
   }
 
   private ensureFaceEmbeddingSchema(): void {
@@ -342,22 +528,40 @@ export class TagDatabase {
 
   upsertPath(absPath: string, kind: PathKind): number {
     const p = normalizePath(absPath)
-    const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ? AND deleted_at IS NULL')
-    stmt.bind([p])
-    let id: number | undefined
-    if (stmt.step()) {
-      const row = stmt.get()
-      id = row[0] as number
-    }
-    stmt.free()
-    if (id !== undefined) {
-      this.db.run('UPDATE paths SET kind = ?, updated_at = datetime(\'now\') WHERE id = ?', [kind, id])
-      this.schedulePersist()
-      return id
+    const dl = pathDrivelessKey(p)
+    if (dl != null) {
+      const byDl = this.db.prepare('SELECT id FROM paths WHERE path_driveless = ? AND deleted_at IS NULL')
+      byDl.bind([dl])
+      let id: number | undefined
+      if (byDl.step()) {
+        id = byDl.get()[0] as number
+      }
+      byDl.free()
+      if (id !== undefined) {
+        this.db.run(
+          `UPDATE paths SET path = ?, path_driveless = ?, kind = ?, updated_at = datetime('now') WHERE id = ?`,
+          [p, dl, kind, id]
+        )
+        this.schedulePersist()
+        return id
+      }
+    } else {
+      const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ? AND deleted_at IS NULL')
+      stmt.bind([p])
+      let id: number | undefined
+      if (stmt.step()) {
+        id = stmt.get()[0] as number
+      }
+      stmt.free()
+      if (id !== undefined) {
+        this.db.run('UPDATE paths SET kind = ?, updated_at = datetime(\'now\') WHERE id = ?', [kind, id])
+        this.schedulePersist()
+        return id
+      }
     }
     this.db.run(
-      'INSERT INTO paths (path, kind, updated_at, created_at, uuid) VALUES (?, ?, datetime(\'now\'), datetime(\'now\'), ?)',
-      [p, kind, randomUUID()]
+      'INSERT INTO paths (path, path_driveless, kind, updated_at, created_at, uuid) VALUES (?, ?, ?, datetime(\'now\'), datetime(\'now\'), ?)',
+      [p, dl, kind, randomUUID()]
     )
     const newId = lastInsertRowid(this.db)
     this.schedulePersist()
@@ -366,6 +570,17 @@ export class TagDatabase {
 
   getPathId(absPath: string): number | undefined {
     const p = normalizePath(absPath)
+    const dl = pathDrivelessKey(p)
+    if (dl != null) {
+      const st = this.db.prepare('SELECT id FROM paths WHERE path_driveless = ? AND deleted_at IS NULL')
+      st.bind([dl])
+      let id: number | undefined
+      if (st.step()) {
+        id = st.get()[0] as number
+      }
+      st.free()
+      if (id !== undefined) return id
+    }
     const stmt = this.db.prepare('SELECT id FROM paths WHERE path = ? AND deleted_at IS NULL')
     stmt.bind([p])
     let id: number | undefined
@@ -378,6 +593,17 @@ export class TagDatabase {
 
   getPathKind(absPath: string): PathKind | undefined {
     const p = normalizePath(absPath)
+    const dl = pathDrivelessKey(p)
+    if (dl != null) {
+      const st = this.db.prepare('SELECT kind FROM paths WHERE path_driveless = ? AND deleted_at IS NULL')
+      st.bind([dl])
+      let k: PathKind | undefined
+      if (st.step()) {
+        k = st.get()[0] as PathKind
+      }
+      st.free()
+      if (k !== undefined) return k
+    }
     const stmt = this.db.prepare('SELECT kind FROM paths WHERE path = ? AND deleted_at IS NULL')
     stmt.bind([p])
     let k: PathKind | undefined
@@ -390,8 +616,15 @@ export class TagDatabase {
 
   deletePath(absPath: string): void {
     const p = normalizePath(absPath)
-    const stmt = this.db.prepare('SELECT id, uuid FROM paths WHERE path = ? AND deleted_at IS NULL')
-    stmt.bind([p])
+    const dl = pathDrivelessKey(p)
+    const stmt =
+      dl != null
+        ? this.db.prepare(
+            'SELECT id, uuid FROM paths WHERE (path = ? OR path_driveless = ?) AND deleted_at IS NULL'
+          )
+        : this.db.prepare('SELECT id, uuid FROM paths WHERE path = ? AND deleted_at IS NULL')
+    if (dl != null) stmt.bind([p, dl])
+    else stmt.bind([p])
     if (!stmt.step()) {
       stmt.free()
       return
@@ -402,7 +635,7 @@ export class TagDatabase {
     stmt.free()
     const tombstone = `${p}::__deleted__${u.slice(0, 8)}`
     this.db.run(
-      `UPDATE paths SET path = ?, deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE paths SET path = ?, path_driveless = NULL, deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
       [tombstone, pid]
     )
     this.schedulePersist()
@@ -995,9 +1228,14 @@ export class TagDatabase {
     this.schedulePersist()
   }
 
-  setPathTags(absPath: string, tagNames: string[]): void {
+  /**
+   * מגדיר את רשימת התגיות הישירות לנתיב.
+   * @param kindHint כאשר ידוע (למשל תיקייה מ"שמור וסיים") — מונע upsert עם `file` לפני ש־`getPathKind` רואה את השורה.
+   */
+  setPathTags(absPath: string, tagNames: string[], kindHint?: PathKind): void {
     const p = normalizePath(absPath)
-    const pathId = this.upsertPath(p, this.getPathKind(p) ?? 'file')
+    const kind = kindHint ?? this.getPathKind(p) ?? 'file'
+    const pathId = this.upsertPath(p, kind)
     this.db.run(
       `UPDATE path_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND deleted_at IS NULL`,
       [pathId]
@@ -1015,9 +1253,10 @@ export class TagDatabase {
     this.schedulePersist()
   }
 
-  setPathExcludedTags(absPath: string, excludedTagNames: string[]): void {
+  setPathExcludedTags(absPath: string, excludedTagNames: string[], kindHint?: PathKind): void {
     const p = normalizePath(absPath)
-    const pathId = this.upsertPath(p, this.getPathKind(p) ?? 'file')
+    const kind = kindHint ?? this.getPathKind(p) ?? 'file'
+    const pathId = this.upsertPath(p, kind)
     this.db.run(
       `UPDATE path_tag_exclusions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE path_id = ? AND deleted_at IS NULL`,
       [pathId]
@@ -1033,6 +1272,18 @@ export class TagDatabase {
       [pathId]
     )
     this.schedulePersist()
+  }
+
+  /** מזהי תגיות ישירות על path_id (ללא ירושה). */
+  private getDirectTagIdsForPathId(pathId: number): Set<number> {
+    const stmt = this.db.prepare(`SELECT tag_id FROM path_tags WHERE path_id = ? AND deleted_at IS NULL`)
+    stmt.bind([pathId])
+    const s = new Set<number>()
+    while (stmt.step()) {
+      s.add(stmt.get()[0] as number)
+    }
+    stmt.free()
+    return s
   }
 
   getDirectTagNamesForPathId(pathId: number): string[] {
@@ -1105,19 +1356,21 @@ export class TagDatabase {
 
   private loadPathExclusionMap(): Map<string, Set<number>> {
     const stmt = this.db.prepare(
-      `SELECT p.path, pte.tag_id FROM paths p
+      `SELECT p.path, p.path_driveless, pte.tag_id FROM paths p
        JOIN path_tag_exclusions pte ON pte.path_id = p.id AND pte.deleted_at IS NULL
        WHERE p.deleted_at IS NULL`
     )
     const m = new Map<string, Set<number>>()
     while (stmt.step()) {
       const r = stmt.get()
-      const path = r[0] as string
-      const tagId = r[1] as number
-      let s = m.get(path)
+      const absPath = normalizePath(r[0] as string)
+      const dl = (r[1] as string | null) ?? pathDrivelessKey(absPath)
+      const mapKey = dl ?? absPath
+      const tagId = r[2] as number
+      let s = m.get(mapKey)
       if (!s) {
         s = new Set()
-        m.set(path, s)
+        m.set(mapKey, s)
       }
       s.add(tagId)
     }
@@ -1127,19 +1380,21 @@ export class TagDatabase {
 
   private loadPathTagIdMap(): Map<string, Set<number>> {
     const stmt = this.db.prepare(
-      `SELECT p.path, pt.tag_id FROM paths p
+      `SELECT p.path, p.path_driveless, pt.tag_id FROM paths p
        JOIN path_tags pt ON pt.path_id = p.id AND pt.deleted_at IS NULL
        WHERE p.deleted_at IS NULL`
     )
     const m = new Map<string, Set<number>>()
     while (stmt.step()) {
       const r = stmt.get()
-      const path = r[0] as string
-      const tagId = r[1] as number
-      let s = m.get(path)
+      const absPath = normalizePath(r[0] as string)
+      const dl = (r[1] as string | null) ?? pathDrivelessKey(absPath)
+      const mapKey = dl ?? absPath
+      const tagId = r[2] as number
+      let s = m.get(mapKey)
       if (!s) {
         s = new Set()
-        m.set(path, s)
+        m.set(mapKey, s)
       }
       s.add(tagId)
     }
@@ -1158,11 +1413,20 @@ export class TagDatabase {
     return m
   }
 
-  private loadFilePaths(): string[] {
-    const stmt = this.db.prepare(`SELECT path FROM paths WHERE kind = 'file' AND deleted_at IS NULL`)
-    const paths: string[] = []
+  /** נתיבי קבצים ותיקיות לשאילתת חיפוש (שניהם יכולים לשאת תגיות ישירות או דרך היררכיה). */
+  private loadSearchCandidatePaths(): { path: string; kind: PathKind; pathDriveless: string | null }[] {
+    const stmt = this.db.prepare(
+      `SELECT path, kind, path_driveless FROM paths WHERE deleted_at IS NULL AND (kind = 'file' OR kind = 'folder') ORDER BY path COLLATE NOCASE`
+    )
+    const paths: { path: string; kind: PathKind; pathDriveless: string | null }[] = []
     while (stmt.step()) {
-      paths.push(stmt.get()[0] as string)
+      const r = stmt.get()
+      const absPath = r[0] as string
+      const kind = r[1] as PathKind
+      const storedDl = r[2] as string | null
+      const norm = normalizePath(absPath)
+      const pathDriveless = storedDl ?? pathDrivelessKey(norm)
+      paths.push({ path: norm, kind, pathDriveless })
     }
     stmt.free()
     return paths
@@ -1174,7 +1438,19 @@ export class TagDatabase {
     exclusionMap?: Map<string, Set<number>>
   ): Set<number> {
     const norm = normalizePath(filePath)
-    const ids = new Set<number>(pathTagMap.get(norm) ?? [])
+    const dl = pathDrivelessKey(norm)
+    const ids = new Set<number>()
+    if (dl != null) {
+      for (const id of pathTagMap.get(dl) ?? []) ids.add(id)
+      for (const dir of ancestorDrivelessDirs(dl)) {
+        const set = pathTagMap.get(dir)
+        if (set) for (const id of set) ids.add(id)
+      }
+      const excluded = exclusionMap?.get(dl)
+      if (excluded) for (const id of excluded) ids.delete(id)
+      return ids
+    }
+    for (const id of pathTagMap.get(norm) ?? []) ids.add(id)
     for (const dir of ancestorDirsOfFile(norm)) {
       const set = pathTagMap.get(dir)
       if (set) for (const id of set) ids.add(id)
@@ -1217,6 +1493,11 @@ export class TagDatabase {
   private isPathInScope(pathValue: string, scopePath: string): boolean {
     const normPath = normalizePath(pathValue)
     const normScope = normalizePath(scopePath)
+    const pdPath = pathDrivelessKey(normPath)
+    const pdScope = pathDrivelessKey(normScope)
+    if (pdPath != null && pdScope != null) {
+      return drivelessItemUnderScope(pdPath, pdScope)
+    }
     const pathCmp = process.platform === 'win32' ? normPath.toLowerCase() : normPath
     const scopeCmp = process.platform === 'win32' ? normScope.toLowerCase() : normScope
     if (pathCmp === scopeCmp) return true
@@ -1413,8 +1694,8 @@ export class TagDatabase {
           const mergedDirect = this.unionTags(existingDirect, importedDirect)
           const mergedExcluded = this.unionTags(existingExcluded, importedExcluded)
           this.upsertPath(entryPath, entryRaw.kind)
-          this.setPathTags(entryPath, mergedDirect)
-          this.setPathExcludedTags(entryPath, mergedExcluded)
+          this.setPathTags(entryPath, mergedDirect, entryRaw.kind)
+          this.setPathExcludedTags(entryPath, mergedExcluded, entryRaw.kind)
           appliedCount += 1
           continue
         }
@@ -1423,8 +1704,8 @@ export class TagDatabase {
 
       // new entry or non-conflicting replace.
       this.upsertPath(entryPath, entryRaw.kind)
-      this.setPathTags(entryPath, importedDirect)
-      this.setPathExcludedTags(entryPath, importedExcluded)
+      this.setPathTags(entryPath, importedDirect, entryRaw.kind)
+      this.setPathExcludedTags(entryPath, importedExcluded, entryRaw.kind)
       appliedCount += 1
 
       // כדי לא לחסום את ה-EventLoop בלוקים גדולים (מונע "לא מגיב"/מסך לבן).
@@ -1442,26 +1723,49 @@ export class TagDatabase {
     const idToName = this.loadTagIdToName()
     const pathTagMap = this.loadPathTagIdMap()
     const exclusionMap = this.loadPathExclusionMap()
-    const files = this.loadFilePaths()
+    const candidates = this.loadSearchCandidatePaths()
+    /** תיקיות לפני קבצים; דדופ לפי path_driveless ב־Windows כדי לא להציג אותו פריט פעמיים אחרי החלפת אות. */
+    const searchCandidatesOrdered = (() => {
+      const seenDedupe = new Set<string>()
+      const deduped: { path: string; kind: PathKind; pathDriveless: string | null }[] = []
+      for (const c of candidates) {
+        const np = normalizePath(c.path)
+        const pd = c.pathDriveless ?? pathDrivelessKey(np)
+        const dedupeKey = pd ?? np
+        if (seenDedupe.has(dedupeKey)) continue
+        seenDedupe.add(dedupeKey)
+        deduped.push({ path: np, kind: c.kind, pathDriveless: pd })
+      }
+      const folders = deduped.filter((c) => c.kind === 'folder').sort((a, b) => a.path.localeCompare(b.path))
+      const files = deduped.filter((c) => c.kind === 'file').sort((a, b) => a.path.localeCompare(b.path))
+      return [...folders, ...files]
+    })()
+
+    const rowFromCandidate = (c: { path: string; kind: PathKind; pathDriveless: string | null }, eff: Set<number>) => ({
+      path: c.path,
+      pathDriveless: c.pathDriveless,
+      kind: c.kind,
+      tags: [...eff]
+        .map((id) => idToName.get(id))
+        .filter((n): n is string => n !== undefined)
+        .sort((a, b) => a.localeCompare(b))
+    })
 
     if (requiredTagIds.length === 0) {
-      const rows = files.slice(0, SEARCH_RESULT_LIMIT).map((fp) => ({
-        path: fp,
-        kind: 'file' as const,
-        tags: [...this.effectiveTagIdsForFile(fp, pathTagMap, exclusionMap)]
-          .map((id) => idToName.get(id))
-          .filter((n): n is string => n !== undefined)
-          .sort((a, b) => a.localeCompare(b))
-      }))
-      return { rows, truncated: files.length > SEARCH_RESULT_LIMIT }
+      const rows = searchCandidatesOrdered
+        .slice(0, SEARCH_RESULT_LIMIT)
+        .map((c) =>
+          rowFromCandidate(c, this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap))
+        )
+      return { rows, truncated: searchCandidatesOrdered.length > SEARCH_RESULT_LIMIT }
     }
 
     const required = new Set(requiredTagIds)
     const out: SearchResultRow[] = []
 
-    for (const fp of files) {
+    for (const c of searchCandidatesOrdered) {
       if (out.length >= SEARCH_RESULT_LIMIT) break
-      const eff = this.effectiveTagIdsForFile(fp, pathTagMap, exclusionMap)
+      const eff = this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap)
       let ok = true
       for (const tid of required) {
         if (!eff.has(tid)) {
@@ -1470,17 +1774,53 @@ export class TagDatabase {
         }
       }
       if (!ok) continue
-      out.push({
-        path: fp,
-        kind: 'file',
-        tags: [...eff]
-          .map((id) => idToName.get(id))
-          .filter((n): n is string => n !== undefined)
-          .sort((a, b) => a.localeCompare(b))
-      })
+      out.push(rowFromCandidate(c, eff))
     }
+
+    /** תיקיות עם כל התגיות הנדרשות כתגיות ישירות — תופסות מקרים שבהם לולאת ה־pathTagMap דילגה על שורת התיקייה. */
+    const seenKeys = new Set(
+      out.map((r) => (r.pathDriveless != null && r.pathDriveless !== '' ? r.pathDriveless : normalizePath(r.path)))
+    )
+    const folderStmt = this.db.prepare(
+      `SELECT id, path, path_driveless FROM paths WHERE deleted_at IS NULL AND kind = 'folder'`
+    )
+    while (folderStmt.step()) {
+      if (out.length >= SEARCH_RESULT_LIMIT) break
+      const fr = folderStmt.get()
+      const pathId = fr[0] as number
+      const rawPath = fr[1] as string
+      const storedDl = fr[2] as string | null
+      const np = normalizePath(rawPath)
+      const pd = storedDl ?? pathDrivelessKey(np)
+      const dedupeKey = pd ?? np
+      if (seenKeys.has(dedupeKey)) continue
+      const directIds = this.getDirectTagIdsForPathId(pathId)
+      let allRequiredDirect = true
+      for (const tid of required) {
+        if (!directIds.has(tid)) {
+          allRequiredDirect = false
+          break
+        }
+      }
+      if (!allRequiredDirect) continue
+      const eff = this.effectiveTagIdsForFile(np, pathTagMap, exclusionMap)
+      const tagNames =
+        eff.size > 0
+          ? [...eff]
+              .map((id) => idToName.get(id))
+              .filter((n): n is string => n !== undefined)
+              .sort((a, b) => a.localeCompare(b))
+          : [...directIds]
+              .map((id) => idToName.get(id))
+              .filter((n): n is string => n !== undefined)
+              .sort((a, b) => a.localeCompare(b))
+      out.push({ path: np, pathDriveless: pd, kind: 'folder', tags: tagNames })
+      seenKeys.add(dedupeKey)
+    }
+    folderStmt.free()
+
     const rows = out.sort((a, b) => a.path.localeCompare(b.path))
-    return { rows, truncated: files.length > 0 && out.length >= SEARCH_RESULT_LIMIT }
+    return { rows, truncated: searchCandidatesOrdered.length > 0 && out.length >= SEARCH_RESULT_LIMIT }
   }
 
   tagIdsByNames(names: string[]): number[] {

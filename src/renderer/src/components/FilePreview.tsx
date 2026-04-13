@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { MediaPathDiagnostics } from '../../../shared/api'
+import type { PathKind } from '../../../shared/types'
 
 /** Above app chrome, table stacking, Virtuoso — portal to body avoids trapped stacking contexts. */
 const PREVIEW_OVERLAY_Z = 2147483000
@@ -48,6 +49,34 @@ function truncateOneLine(s: string, max: number): string {
   return `${s.slice(0, Math.max(0, max - 1))}…`
 }
 
+/** אייקון תיקייה לתא התצוגה המקדימה הקטן (בלי טעינת תמונה מהדיסק). */
+function FolderPreviewGlyph({ pixelSize }: { pixelSize: number }) {
+  return (
+    <svg
+      width={pixelSize}
+      height={pixelSize}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      style={{ display: 'block' }}
+    >
+      <path
+        d="M3.25 8.25c0-1.1.9-2 2-2h4.35l1.15 1.15.5.5H18.5c1 0 1.75.75 1.75 1.75v8.5c0 1.1-.9 2-2 2H5.25c-1.1 0-2-.9-2-2v-9.9z"
+        fill="rgba(0, 212, 255, 0.14)"
+        stroke="rgba(0, 212, 255, 0.62)"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3.25 8h6.1l.85.85H18.6"
+        stroke="rgba(148, 163, 184, 0.45)"
+        strokeWidth="0.9"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 /** LTR isolate so Windows paths (E:\… + Hebrew segments) don’t break in RTL tooltips. */
 const LRI = '\u2066'
 const PDI = '\u2069'
@@ -67,11 +96,13 @@ function compactPathDebugLine(d: MediaPathDiagnostics): string {
 /** תצוגה מקדימה לקובץ (תמונה/וידאו) עם כפתורי פתיחה בזיהוי פנים או עורך סימן מים */
 export function FilePreview(props: {
   filePath: string
+  /** כאשר `folder` — אייקון תיקייה בלי טעינת תצוגה מקדימה. */
+  pathKind?: PathKind
   size?: number
   onOpenInWatermark?: (path: string) => void
   onOpenInFaces?: (path: string) => void
 }) {
-  const { filePath, size = 36, onOpenInWatermark, onOpenInFaces } = props
+  const { filePath, pathKind = 'file', size = 36, onOpenInWatermark, onOpenInFaces } = props
   const ref = useRef<HTMLDivElement | null>(null)
   const thumbRef = useRef<string | null>(null)
   const inFlightRef = useRef(false)
@@ -122,6 +153,7 @@ export function FilePreview(props: {
   }, [filePath])
 
   useEffect(() => {
+    if (pathKind === 'folder') return
     const el = ref.current
     if (!el) return
     const io = new IntersectionObserver(
@@ -135,7 +167,7 @@ export function FilePreview(props: {
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [filePath, requestThumb])
+  }, [filePath, pathKind, requestThumb])
 
   useEffect(() => {
     if (!error) return
@@ -151,18 +183,25 @@ export function FilePreview(props: {
     }
   }, [error, filePath])
 
-  const previewTitle = truncateOneLine(
-    error && pathDebug
-      ? `${error} · ${compactPathDebugLine(pathDebug)}`
-      : error
-        ? error
-        : loading
-          ? 'טוען…'
-          : 'תצוגה מקדימה',
-    140
-  )
+  const previewTitle =
+    pathKind === 'folder'
+      ? 'פתח תיקייה'
+      : truncateOneLine(
+          error && pathDebug
+            ? `${error} · ${compactPathDebugLine(pathDebug)}`
+            : error
+              ? error
+              : loading
+                ? 'טוען…'
+                : 'תצוגה מקדימה',
+          140
+        )
 
   async function openFull() {
+    if (pathKind === 'folder') {
+      void window.api.openPath(filePath)
+      return
+    }
     if (error) {
       void requestThumb(true)
       return
@@ -197,14 +236,16 @@ export function FilePreview(props: {
         title={previewTitle}
         onClick={() => void openFull()}
       >
-        {thumbUrl ? (
+        {pathKind === 'folder' ? (
+          <FolderPreviewGlyph pixelSize={Math.max(20, Math.round(size * 0.88))} />
+        ) : thumbUrl ? (
           <img src={thumbUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
         ) : (
           <span className="muted small" style={{ fontSize: 8, textAlign: 'center', padding: 1, lineHeight: 1.1 }}>
             {error ? 'שוב' : loading ? '…' : ''}
           </span>
         )}
-        {isVideoPath(filePath) && (
+        {pathKind === 'file' && isVideoPath(filePath) && (
           <span
             style={{
               position: 'absolute',

@@ -3,10 +3,17 @@ import { TableVirtuoso } from 'react-virtuoso'
 import type { SearchResultRow, TagFolderRow, TagRow } from '../../../../shared/types'
 import { FilePreview } from '../../components/FilePreview'
 import { getFolderAccentStyle, type FolderAccentStyle } from '../folderAccent'
+import {
+  SEARCH_RESULT_SHAPE_LABEL,
+  SEARCH_RESULT_SHAPE_ORDER,
+  type SearchResultShapeId
+} from '../../pages/Search/searchResultShapeFilter'
 
 export type SearchTabPanelProps = {
   searchScope: string | null
   setSearchScope: (v: string | null) => void
+  searchContentFilterSelection: ReadonlySet<SearchResultShapeId>
+  toggleSearchContentShape: (id: SearchResultShapeId) => void
   searchDraft: string
   setSearchDraft: (v: string) => void
   searchSelected: string[]
@@ -43,6 +50,8 @@ export type SearchTabPanelProps = {
 export function SearchTabPanel({
   searchScope,
   setSearchScope,
+  searchContentFilterSelection,
+  toggleSearchContentShape,
   searchDraft,
   setSearchDraft,
   searchSelected,
@@ -74,17 +83,20 @@ export function SearchTabPanel({
   addTagToSearchFile,
   removeTagFromSearchFile
 }: SearchTabPanelProps) {
+  const foldersOnly = searchContentFilterSelection.has('folders')
+
   return (
     <section className="panel">
       <p className="muted small">
-        הוסיפו תגיות לחיפוש — יוצגו רק <strong>קבצים</strong> שיש להם את <strong>כל</strong> התגיות.
-        ללא תגיות — לא יוצג כלום. ניתן לצמצם חיפוש לתיקייה או כונן מסוים.
+        הוסיפו תגיות לחיפוש — יוצגו <strong>קבצים ותיקיות</strong> שיש להם את <strong>כל</strong> התגיות שנבחרו.
+        ללא תגיות — לא יוצג כלום. ניתן לצמצם לתיקייה או כונן, ולסנן את תוצאות החיפוש לפי סוג תוכן.
       </p>
       <div className="field" style={{ marginBottom: '0.75rem' }}>
         <label>חיפוש בתוך (אופציונלי)</label>
         <div className="toolbar">
           <input
             readOnly
+            className="path-ltr-isolate"
             style={{ flex: 1, minWidth: 200, background: 'rgba(26, 26, 46, 0.6)' }}
             value={searchScope ?? 'כל הנתיבים'}
             title={searchScope ?? ''}
@@ -98,6 +110,32 @@ export function SearchTabPanel({
             </button>
           )}
         </div>
+      </div>
+      <div className="field" style={{ marginBottom: '0.75rem' }}>
+        <label>סינון תוצאות</label>
+        <div className="search-shape-filters" role="group" aria-label="סינון לפי סוג תוכן">
+          {SEARCH_RESULT_SHAPE_ORDER.map((id) => {
+            const disabled = foldersOnly && id !== 'folders'
+            return (
+              <label
+                key={id}
+                className={`search-shape-filter-option${disabled ? ' is-disabled' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={searchContentFilterSelection.has(id)}
+                  disabled={disabled}
+                  onChange={() => toggleSearchContentShape(id)}
+                />
+                <span>{SEARCH_RESULT_SHAPE_LABEL[id]}</span>
+              </label>
+            )
+          })}
+        </div>
+        <p className="muted small" style={{ margin: 0 }}>
+          ללא סימון — מוצג <strong>הכל</strong>. אפשר לשלב תמונות, וידאו, מסמכים ואחר (לפי סיומת). אם מסמנים{' '}
+          <strong>תיקיות</strong> — יוצגו רק תיקיות ולא ניתן לשלב עם סוגי קבצים.
+        </p>
       </div>
       <div className="field">
         <label>הוספת תגית לשאילתת החיפוש</label>
@@ -209,7 +247,7 @@ export function SearchTabPanel({
           fixedHeaderContent={() => (
             <tr>
               <th style={{ width: 44 }} />
-              <th>קובץ</th>
+              <th>נתיב</th>
               <th>תגיות</th>
               <th />
             </tr>
@@ -227,6 +265,7 @@ export function SearchTabPanel({
                 <FilePreview
                   key={row.path}
                   filePath={row.path}
+                  pathKind={row.kind}
                   onOpenInWatermark={onOpenInWatermark}
                   onOpenInFaces={onOpenInFaces}
                 />
@@ -236,7 +275,7 @@ export function SearchTabPanel({
                   type="button"
                   className="path-open-btn"
                   onClick={() => void window.api.openPath(row.path)}
-                  title="פתח קובץ"
+                  title="פתח ב־Explorer"
                 >
                   {row.path}
                 </button>

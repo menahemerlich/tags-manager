@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { normalizePath } from '../shared/pathUtils'
 import type { IndexProgress } from '../shared/types'
@@ -18,7 +19,8 @@ async function countFilesRecursive(root: string, signal?: AbortSignal): Promise<
       e.name = 'AbortError'
       throw e
     }
-    let entries: Awaited<ReturnType<typeof fs.readdir>>[number][] = []
+    /** רשימת כניסות בתיקייה (כולל סוג הקובץ) — טיפוס מפורש כדי למנוע בעיות Dirent generics ב־Node. */
+    let entries: Dirent[] = []
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {
@@ -54,7 +56,8 @@ async function walkFilesRecursive(
       e.name = 'AbortError'
       throw e
     }
-    let entries: Awaited<ReturnType<typeof fs.readdir>>[number][] = []
+    /** רשימת כניסות בתיקייה (כולל סוג הקובץ) — טיפוס מפורש כדי למנוע בעיות Dirent generics ב־Node. */
+    let entries: Dirent[] = []
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {

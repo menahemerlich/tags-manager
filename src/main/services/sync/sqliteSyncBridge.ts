@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Database } from 'sql.js'
+import { normalizePath, pathDrivelessKey } from '../../../shared/pathUtils'
 import { SYNC_TABLES } from '../../schema/syncMigration'
 
 type SyncTableName = (typeof SYNC_TABLES)[number]
@@ -134,7 +135,8 @@ export class SqliteSyncBridge {
   }
 
   private applyPaths(row: Record<string, unknown>, uuid: string): void {
-    const path = String(row.path ?? '')
+    const path = normalizePath(String(row.path ?? ''))
+    const pathDriveless = pathDrivelessKey(path)
     const kind = row.kind === 'folder' ? 'folder' : 'file'
     const created_at = row.created_at != null ? String(row.created_at) : null
     const updated_at = row.updated_at != null ? String(row.updated_at) : null
@@ -145,13 +147,13 @@ export class SqliteSyncBridge {
     st.free()
     if (exists) {
       this.db.run(
-        `UPDATE paths SET path = ?, kind = ?, created_at = COALESCE(?, created_at), updated_at = ?, deleted_at = ? WHERE uuid = ?`,
-        [path, kind, created_at, updated_at ?? new Date().toISOString(), deleted_at, uuid]
+        `UPDATE paths SET path = ?, path_driveless = ?, kind = ?, created_at = COALESCE(?, created_at), updated_at = ?, deleted_at = ? WHERE uuid = ?`,
+        [path, pathDriveless, kind, created_at, updated_at ?? new Date().toISOString(), deleted_at, uuid]
       )
     } else {
       this.db.run(
-        `INSERT INTO paths (path, kind, updated_at, created_at, uuid, deleted_at) VALUES (?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?, ?)`,
-        [path, kind, updated_at, created_at, uuid, deleted_at]
+        `INSERT INTO paths (path, path_driveless, kind, updated_at, created_at, uuid, deleted_at) VALUES (?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')), ?, ?)`,
+        [path, pathDriveless, kind, updated_at, created_at, uuid, deleted_at]
       )
     }
   }
