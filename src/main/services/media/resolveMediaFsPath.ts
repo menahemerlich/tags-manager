@@ -2,6 +2,8 @@ import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  firstWindowsDriveLetterFromPath,
+  isWindowsRuntime,
   normalizePath,
   pathDrivelessKey,
   sanitizePathInput,
@@ -118,7 +120,7 @@ export function resolvePathPreferExistingOnAnyDrive(storedPath: string): string 
   const quick = tryResolveMediaFsPath(storedPath)
   if (quick) return quick
   const norm = normalizePath(storedPath)
-  if (process.platform !== 'win32') return norm
+  if (!isWindowsRuntime()) return norm
   try {
     if (existsSync(norm)) return norm
   } catch {
@@ -126,8 +128,15 @@ export function resolvePathPreferExistingOnAnyDrive(storedPath: string): string 
   }
   const dl = pathDrivelessKey(norm)
   if (!dl) return norm
-  for (let i = 0; i < 26; i++) {
-    const L = String.fromCharCode(65 + i)
+  const order: string[] = []
+  const add = (L: string | null) => {
+    if (!L) return
+    const u = L.toUpperCase()
+    if (/^[A-Z]$/.test(u) && !order.includes(u)) order.push(u)
+  }
+  add(firstWindowsDriveLetterFromPath(norm))
+  for (let i = 0; i < 26; i++) add(String.fromCharCode(65 + i))
+  for (const L of order) {
     const candidate = windowsAbsoluteFromDriveLetter(L, dl)
     try {
       if (existsSync(candidate)) return candidate

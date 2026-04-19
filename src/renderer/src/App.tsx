@@ -290,7 +290,7 @@ export default function App() {
     setSearchLoading(true)
     try {
       const res = await window.api.search(searchSelected)
-      const displayRows = await window.api.resolveSearchDisplayPaths(res.rows)
+      const displayRows = await window.api.resolveSearchDisplayPaths(res.rows, searchScope)
       startTransition(() => {
         setSearchResults(displayRows)
         setSearchTruncated(res.truncated ?? false)
@@ -300,7 +300,7 @@ export default function App() {
     } finally {
       setSearchLoading(false)
     }
-  }, [searchSelected])
+  }, [searchSelected, searchScope])
 
   useEffect(() => {
     void runSearch()

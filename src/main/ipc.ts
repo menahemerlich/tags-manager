@@ -714,9 +714,12 @@ export function registerIpcHandlers(
     return await db.searchFilesByTagIds(ids)
   })
 
-  ipcMain.handle('paths:resolve-search-display', async (_e, rows: SearchResultRow[]) => {
-    return resolveSearchResultRowsDisplayPaths(rows)
-  })
+  ipcMain.handle(
+    'paths:resolve-search-display',
+    async (_e, rows: SearchResultRow[], searchScope: string | null | undefined) => {
+      return await resolveSearchResultRowsDisplayPaths(rows, { searchScope: searchScope ?? null })
+    }
+  )
 
   ipcMain.handle('settings:get', async () => {
     return loadSettings(app)

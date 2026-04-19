@@ -82,8 +82,8 @@ const api = {
   deleteTag: (id: number) => ipcRenderer.invoke('tags:delete', id) as Promise<{ ok: true }>,
   search: (tagNames: string[]) =>
     ipcRenderer.invoke('search:query', tagNames) as Promise<SearchResult>,
-  resolveSearchDisplayPaths: (rows: SearchResultRow[]) =>
-    ipcRenderer.invoke('paths:resolve-search-display', rows) as Promise<SearchResultRow[]>,
+  resolveSearchDisplayPaths: (rows: SearchResultRow[], searchScope?: string | null) =>
+    ipcRenderer.invoke('paths:resolve-search-display', rows, searchScope ?? null) as Promise<SearchResultRow[]>,
   getSettings: () => ipcRenderer.invoke('settings:get') as Promise<AppSettings>,
   setSettings: (s: AppSettings) => ipcRenderer.invoke('settings:set', s) as Promise<{ ok: true }>,
   packageAppForTransfer: (options: PackageAppForTransferOptions) =>

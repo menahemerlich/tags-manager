@@ -61,7 +61,7 @@ export interface ElectronApi {
   deleteTag: (id: number) => Promise<{ ok: true }>
   search: (tagNames: string[]) => Promise<SearchResult>
   /** התאמת אות כונן לנתיבים קיימים בדיסק (תצוגת חיפוש / פתיחה). */
-  resolveSearchDisplayPaths: (rows: SearchResultRow[]) => Promise<SearchResultRow[]>
+  resolveSearchDisplayPaths: (rows: SearchResultRow[], searchScope?: string | null) => Promise<SearchResultRow[]>
   getSettings: () => Promise<AppSettings>
   setSettings: (s: AppSettings) => Promise<{ ok: true }>
   packageAppForTransfer: (options: PackageAppForTransferOptions) => Promise<PackageAppForTransferResult>

@@ -1,6 +1,28 @@
 import path from 'node:path'
 
 /**
+ * Windows — גם ב-main (Node) וגם ברנדרר (Vite בלי `process` גלובלי).
+ */
+export function isWindowsRuntime(): boolean {
+  if (typeof process !== 'undefined' && process.platform) {
+    return process.platform === 'win32'
+  }
+  if (typeof navigator !== 'undefined') {
+    const n = navigator as Navigator & { userAgentData?: { platform?: string } }
+    if (n.userAgentData?.platform === 'Windows') return true
+    return /windows/i.test(navigator.userAgent)
+  }
+  return false
+}
+
+/** אות כונן מנתיב `D:\...` (או null). */
+export function firstWindowsDriveLetterFromPath(absolutePath: string): string | null {
+  if (!isWindowsRuntime()) return null
+  const m = /^([A-Za-z]):/.exec(absolutePath.replace(/\//g, '\\').trim())
+  return m ? m[1].toUpperCase() : null
+}
+
+/**
  * מנקה תווים בלתי נראים ששוברים ניתוב (במיוחד עם UI בעברית/RTL):
  * - סימוני כיוון (RLM/LRM/embeddings) שגורמים ל־`path.resolve` לראות נתיב יחסי ב־Windows
  * - רווח רוחב אפס U+200B שנכנס מעתיקה מדפדפן/צ'אט
@@ -24,7 +46,7 @@ export function sanitizePathInput(p: string): string {
  * Treat them as rooted on the drive: `E:\folder\file.jpg`.
  */
 function fixWindowsDriveLetterPath(input: string): string {
-  if (process.platform !== 'win32') return input
+  if (!isWindowsRuntime()) return input
   const n = path.normalize(input)
   const m = /^([A-Za-z]):([^\\/])/.exec(n)
   if (m) return path.normalize(`${m[1]}:\\${n.slice(2)}`)
@@ -42,7 +64,7 @@ export function normalizePath(p: string): string {
   const prepared = fixWindowsDriveLetterPath(cleaned)
   const resolved = path.resolve(prepared)
   let out = path.normalize(resolved)
-  if (process.platform === 'win32') {
+  if (isWindowsRuntime()) {
     out = out.replace(/\//g, '\\')
   }
   return out
@@ -55,7 +77,7 @@ export function normalizePath(p: string): string {
  * Keep `\\?\` for Node `fs`; pass this form to Shell only.
  */
 export function toWindowsShellPath(fsPath: string): string {
-  if (process.platform !== 'win32' || !fsPath) return fsPath
+  if (!isWindowsRuntime() || !fsPath) return fsPath
   if (fsPath.startsWith('\\\\?\\UNC\\')) {
     return '\\' + fsPath.slice('\\\\?\\UNC\\'.length)
   }
@@ -110,7 +132,7 @@ export function isFolderAncestorOfFile(folderPath: string, filePath: string): bo
  */
 export function normalizeSearchScopePath(scopePath: string): string {
   let base = normalizePath(scopePath).replace(/[/\\]+$/, '')
-  if (process.platform === 'win32' && /^[A-Za-z]:$/.test(base)) {
+  if (isWindowsRuntime() && /^[A-Za-z]:$/.test(base)) {
     base += '\\'
   }
   return base
@@ -127,7 +149,7 @@ export function pathDrivelessKey(absolutePath: string): string | null {
 
 /** Like `pathDrivelessKey` but skips `normalizePath` when the caller already normalized. */
 export function pathDrivelessKeyNormalized(normalizedAbsPath: string): string | null {
-  if (process.platform !== 'win32') return null
+  if (!isWindowsRuntime()) return null
   let p = normalizedAbsPath.replace(/\//g, '\\')
   if (p.startsWith('\\\\?\\UNC\\')) return null
   if (p.startsWith('\\\\?\\')) {

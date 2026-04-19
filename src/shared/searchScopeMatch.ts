@@ -1,5 +1,6 @@
 import {
   drivelessItemUnderScope,
+  isWindowsRuntime,
   normalizePath,
   normalizeSearchScopePath,
   pathDrivelessKey
@@ -23,7 +24,7 @@ export function pathMatchesSearchScope(
   const sep = base.includes('\\') ? '\\' : '/'
   const prefix = /[\\/]+$/.test(base) ? base : base + sep
   const rp = normalizePath(rowPath)
-  const pathCmp = process.platform === 'win32' ? rp.toLowerCase() : rp
-  const scopeCmp = process.platform === 'win32' ? base.toLowerCase() : base
+  const pathCmp = isWindowsRuntime() ? rp.toLowerCase() : rp
+  const scopeCmp = isWindowsRuntime() ? base.toLowerCase() : base
   return pathCmp === scopeCmp || pathCmp.startsWith(prefix)
 }
