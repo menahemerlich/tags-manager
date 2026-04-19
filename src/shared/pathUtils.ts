@@ -164,6 +164,19 @@ export function ancestorDrivelessDirs(drivelessKey: string | null): string[] {
   return out
 }
 
+/**
+ * Windows: נתיב מוחלט מאות כונן + מפתח path_driveless (למשל `E` ו־`\a\b` → `E:\a\b`).
+ * כש־`drivelessKey` הוא `\` בלבד — שורש הכונן (`E:\`).
+ */
+export function windowsAbsoluteFromDriveLetter(driveLetter: string, drivelessKey: string): string {
+  const L = (/^([A-Za-z])/.exec(driveLetter)?.[1] ?? 'C').toUpperCase()
+  if (drivelessKey === '\\') {
+    return `${L}:\\`
+  }
+  const tail = drivelessKey.startsWith('\\') ? drivelessKey.slice(1) : drivelessKey
+  return path.win32.normalize(`${L}:\\${tail}`)
+}
+
 /** Whether `itemDriveless` is the scope folder/file itself or nested under `scopeDriveless`. */
 export function drivelessItemUnderScope(itemDriveless: string, scopeDriveless: string): boolean {
   if (scopeDriveless === '\\') {

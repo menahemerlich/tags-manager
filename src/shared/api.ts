@@ -4,6 +4,7 @@ import type {
   PathKind,
   TransferPackageProgress,
   SearchResult,
+  SearchResultRow,
   TagImportApplyPayload,
   TagImportPreview,
   TagRow,
@@ -59,6 +60,8 @@ export interface ElectronApi {
   renameTag: (id: number, name: string) => Promise<{ ok: true } | { ok: false; error: string }>
   deleteTag: (id: number) => Promise<{ ok: true }>
   search: (tagNames: string[]) => Promise<SearchResult>
+  /** התאמת אות כונן לנתיבים קיימים בדיסק (תצוגת חיפוש / פתיחה). */
+  resolveSearchDisplayPaths: (rows: SearchResultRow[]) => Promise<SearchResultRow[]>
   getSettings: () => Promise<AppSettings>
   setSettings: (s: AppSettings) => Promise<{ ok: true }>
   packageAppForTransfer: (options: PackageAppForTransferOptions) => Promise<PackageAppForTransferResult>

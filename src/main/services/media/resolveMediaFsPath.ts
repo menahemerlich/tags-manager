@@ -1,7 +1,12 @@
 import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { normalizePath, sanitizePathInput } from '../../../shared/pathUtils'
+import {
+  normalizePath,
+  pathDrivelessKey,
+  sanitizePathInput,
+  windowsAbsoluteFromDriveLetter
+} from '../../../shared/pathUtils'
 
 function collectPathVariants(s: string): string[] {
   const out: string[] = []
@@ -104,6 +109,33 @@ export function tryResolveMediaFsPath(raw: unknown): string | null {
   }
 
   return null
+}
+
+/**
+ * כמו tryResolveMediaFsPath, ובנוסף ב־Windows: אם אין קובץ באות כונן שבנתיב אבל יש באותו זנב בכונן אחר — מחזיר אותו.
+ */
+export function resolvePathPreferExistingOnAnyDrive(storedPath: string): string {
+  const quick = tryResolveMediaFsPath(storedPath)
+  if (quick) return quick
+  const norm = normalizePath(storedPath)
+  if (process.platform !== 'win32') return norm
+  try {
+    if (existsSync(norm)) return norm
+  } catch {
+    /* ignore */
+  }
+  const dl = pathDrivelessKey(norm)
+  if (!dl) return norm
+  for (let i = 0; i < 26; i++) {
+    const L = String.fromCharCode(65 + i)
+    const candidate = windowsAbsoluteFromDriveLetter(L, dl)
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      continue
+    }
+  }
+  return norm
 }
 
 export function resolveMediaFsPath(raw: unknown): string {

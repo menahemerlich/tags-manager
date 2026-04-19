@@ -14,6 +14,7 @@ import type {
   ImportUserDataResult,
   PackageAppForTransferOptions,
   PackageAppForTransferResult,
+  SearchResultRow,
   TagExportJson,
   TagImportApplyPayload,
   TransferPackageProgress,
@@ -42,7 +43,8 @@ import {
 } from './watermarkVideo'
 import { registerSupabaseSyncIpc } from './ipc/sync.ipc'
 import { registerMediaIpc } from './ipc/media.ipc'
-import { tryResolveMediaFsPath } from './services/media/resolveMediaFsPath'
+import { resolvePathPreferExistingOnAnyDrive, tryResolveMediaFsPath } from './services/media/resolveMediaFsPath'
+import { resolveSearchResultRowsDisplayPaths } from './services/resolveSearchDisplayPaths'
 import {
   DATA_RELOAD_USER_DATA,
   WATERMARK_IMAGE_EXPORT_BUSY,
@@ -709,7 +711,11 @@ export function registerIpcHandlers(
       if (id === undefined) return { rows: [], truncated: false }
       ids.push(id)
     }
-    return db.searchFilesByTagIds(ids)
+    return await db.searchFilesByTagIds(ids)
+  })
+
+  ipcMain.handle('paths:resolve-search-display', async (_e, rows: SearchResultRow[]) => {
+    return resolveSearchResultRowsDisplayPaths(rows)
   })
 
   ipcMain.handle('settings:get', async () => {
@@ -801,14 +807,14 @@ export function registerIpcHandlers(
   ipcMain.handle('shell:show-in-folder', async (_e, filePath: string) => {
     const s = sanitizePathInput(filePath)
     if (!s) return
-    const fsPath = tryResolveMediaFsPath(s) ?? normalizePath(s)
+    const fsPath = resolvePathPreferExistingOnAnyDrive(s)
     shell.showItemInFolder(toWindowsShellPath(fsPath))
   })
 
   ipcMain.handle('shell:open-path', async (_e, filePath: string) => {
     const s = sanitizePathInput(filePath)
     if (!s) return 'empty path'
-    const fsPath = tryResolveMediaFsPath(s) ?? normalizePath(s)
+    const fsPath = resolvePathPreferExistingOnAnyDrive(s)
     return await shell.openPath(toWindowsShellPath(fsPath))
   })
 

@@ -1719,27 +1719,29 @@ export class TagDatabase {
     return { appliedCount, skippedCount }
   }
 
-  searchFilesByTagIds(requiredTagIds: number[]): SearchResult {
+  /** חיפוש עם הפסקות ל-event loop כדי שהחלון לא ייתקע בזמן שאילתות כבדות. */
+  async searchFilesByTagIds(requiredTagIds: number[]): Promise<SearchResult> {
+    const yieldToUi = () => new Promise<void>((r) => setImmediate(r))
     const idToName = this.loadTagIdToName()
     const pathTagMap = this.loadPathTagIdMap()
     const exclusionMap = this.loadPathExclusionMap()
     const candidates = this.loadSearchCandidatePaths()
     /** תיקיות לפני קבצים; דדופ לפי path_driveless ב־Windows כדי לא להציג אותו פריט פעמיים אחרי החלפת אות. */
-    const searchCandidatesOrdered = (() => {
-      const seenDedupe = new Set<string>()
-      const deduped: { path: string; kind: PathKind; pathDriveless: string | null }[] = []
-      for (const c of candidates) {
-        const np = normalizePath(c.path)
-        const pd = c.pathDriveless ?? pathDrivelessKey(np)
-        const dedupeKey = pd ?? np
-        if (seenDedupe.has(dedupeKey)) continue
-        seenDedupe.add(dedupeKey)
-        deduped.push({ path: np, kind: c.kind, pathDriveless: pd })
-      }
-      const folders = deduped.filter((c) => c.kind === 'folder').sort((a, b) => a.path.localeCompare(b.path))
-      const files = deduped.filter((c) => c.kind === 'file').sort((a, b) => a.path.localeCompare(b.path))
-      return [...folders, ...files]
-    })()
+    const seenDedupe = new Set<string>()
+    const deduped: { path: string; kind: PathKind; pathDriveless: string | null }[] = []
+    for (let i = 0; i < candidates.length; i++) {
+      if (i > 0 && i % 512 === 0) await yieldToUi()
+      const c = candidates[i]
+      const np = normalizePath(c.path)
+      const pd = c.pathDriveless ?? pathDrivelessKey(np)
+      const dedupeKey = pd ?? np
+      if (seenDedupe.has(dedupeKey)) continue
+      seenDedupe.add(dedupeKey)
+      deduped.push({ path: np, kind: c.kind, pathDriveless: pd })
+    }
+    const folders = deduped.filter((c) => c.kind === 'folder').sort((a, b) => a.path.localeCompare(b.path))
+    const files = deduped.filter((c) => c.kind === 'file').sort((a, b) => a.path.localeCompare(b.path))
+    const searchCandidatesOrdered = [...folders, ...files]
 
     const rowFromCandidate = (c: { path: string; kind: PathKind; pathDriveless: string | null }, eff: Set<number>) => ({
       path: c.path,
@@ -1752,18 +1754,22 @@ export class TagDatabase {
     })
 
     if (requiredTagIds.length === 0) {
-      const rows = searchCandidatesOrdered
-        .slice(0, SEARCH_RESULT_LIMIT)
-        .map((c) =>
-          rowFromCandidate(c, this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap))
-        )
+      const slice = searchCandidatesOrdered.slice(0, SEARCH_RESULT_LIMIT)
+      const rows: SearchResultRow[] = []
+      for (let i = 0; i < slice.length; i++) {
+        if (i > 0 && i % 64 === 0) await yieldToUi()
+        const c = slice[i]
+        rows.push(rowFromCandidate(c, this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap)))
+      }
       return { rows, truncated: searchCandidatesOrdered.length > SEARCH_RESULT_LIMIT }
     }
 
     const required = new Set(requiredTagIds)
     const out: SearchResultRow[] = []
 
-    for (const c of searchCandidatesOrdered) {
+    for (let i = 0; i < searchCandidatesOrdered.length; i++) {
+      if (i > 0 && i % 96 === 0) await yieldToUi()
+      const c = searchCandidatesOrdered[i]
       if (out.length >= SEARCH_RESULT_LIMIT) break
       const eff = this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap)
       let ok = true
@@ -1784,7 +1790,10 @@ export class TagDatabase {
     const folderStmt = this.db.prepare(
       `SELECT id, path, path_driveless FROM paths WHERE deleted_at IS NULL AND kind = 'folder'`
     )
+    let folderStep = 0
     while (folderStmt.step()) {
+      folderStep += 1
+      if (folderStep > 1 && folderStep % 48 === 0) await yieldToUi()
       if (out.length >= SEARCH_RESULT_LIMIT) break
       const fr = folderStmt.get()
       const pathId = fr[0] as number

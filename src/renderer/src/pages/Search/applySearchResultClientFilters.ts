@@ -42,8 +42,12 @@ export function applySearchResultClientFilters(
     })
     .map((row) => {
       if (!scope) return row
-      const resolved = resolvePathForSearchScope(scope, row.path, row.pathDriveless ?? null)
-      if (resolved === row.path) return row
-      return { ...row, path: resolved }
+      try {
+        const resolved = resolvePathForSearchScope(scope, row.path, row.pathDriveless ?? null)
+        if (resolved === row.path) return row
+        return { ...row, path: resolved }
+      } catch {
+        return row
+      }
     })
 }

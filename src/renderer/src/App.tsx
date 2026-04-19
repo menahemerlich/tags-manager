@@ -1,4 +1,5 @@
 ﻿import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -272,8 +273,12 @@ export default function App() {
   }
 
   async function handlePickSearchScope() {
-    const folder = await window.api.pickFolder()
-    if (folder) setSearchScope(folder)
+    try {
+      const folder = await window.api.pickFolder()
+      if (folder) setSearchScope(folder)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   async function handleCancelIndex() {
@@ -285,8 +290,11 @@ export default function App() {
     setSearchLoading(true)
     try {
       const res = await window.api.search(searchSelected)
-      setSearchResults(res.rows)
-      setSearchTruncated(res.truncated ?? false)
+      const displayRows = await window.api.resolveSearchDisplayPaths(res.rows)
+      startTransition(() => {
+        setSearchResults(displayRows)
+        setSearchTruncated(res.truncated ?? false)
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
