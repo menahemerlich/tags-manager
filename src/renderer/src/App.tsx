@@ -287,6 +287,8 @@ export default function App() {
       const res = await window.api.search(searchSelected)
       setSearchResults(res.rows)
       setSearchTruncated(res.truncated ?? false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSearchLoading(false)
     }

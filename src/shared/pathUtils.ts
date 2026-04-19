@@ -105,6 +105,18 @@ export function isFolderAncestorOfFile(folderPath: string, filePath: string): bo
 }
 
 /**
+ * נתיב תחום חיפוש מנורמל: אחרי הסרת סלאשים מיותרים בסוף לא משאירים ב-Windows `D:` בלי `\` —
+ * אחרת `pathDrivelessKey` נכשל ונופלים להשוואת prefix עם אות כונן במקום לפי זנב נתיב.
+ */
+export function normalizeSearchScopePath(scopePath: string): string {
+  let base = normalizePath(scopePath).replace(/[/\\]+$/, '')
+  if (process.platform === 'win32' && /^[A-Za-z]:$/.test(base)) {
+    base += '\\'
+  }
+  return base
+}
+
+/**
  * Windows: stable key without drive letter for `X:\...` paths (`\lib\a.jpg`, lowercase).
  * UNC, extended paths that are not `\\?\X:\`, and non-Windows → `null` (use full absolute path as key).
  */
@@ -168,7 +180,7 @@ export function resolvePathForSearchScope(
   storedAbsolutePath: string,
   itemDriveless: string | null
 ): string {
-  const scopeNorm = normalizePath(scopePath).replace(/[/\\]+$/, '')
+  const scopeNorm = normalizeSearchScopePath(scopePath)
   const sk = pathDrivelessKeyNormalized(scopeNorm)
   if (!itemDriveless || !sk) return storedAbsolutePath
   if (!drivelessItemUnderScope(itemDriveless, sk)) return storedAbsolutePath
