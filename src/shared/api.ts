@@ -56,6 +56,7 @@ export interface ElectronApi {
   listTagFolders: () => Promise<TagFolderRow[]>
   createTagFolder: (name: string) => Promise<{ ok: true; id: number } | { ok: false; error: string }>
   deleteTagFolder: (id: number) => Promise<{ ok: true }>
+  renameTagFolder: (id: number, name: string) => Promise<{ ok: true } | { ok: false; error: string }>
   setTagFolderForTag: (tagId: number, folderId: number | null) => Promise<{ ok: true } | { ok: false; error: string }>
   renameTag: (id: number, name: string) => Promise<{ ok: true } | { ok: false; error: string }>
   deleteTag: (id: number) => Promise<{ ok: true }>

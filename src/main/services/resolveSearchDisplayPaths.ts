@@ -10,7 +10,11 @@ import {
 } from '../../shared/pathUtils'
 import { tryResolveMediaFsPath } from './media/resolveMediaFsPath'
 
-/** סדר אותיות: קודם תחום חיפוש (אם נבחר), אחר כך אות מהנתיב ב-DB, ואז שאר האל״ף־בי״ת — פחות עומס מסריקה עיוורת. */
+/**
+ * סדר אותיות לבדיקת קיום קובץ לפי path_driveless.
+ * אם נבחר תחום עם אות כונן — רק אותה אות (לא מחליפים לכונן אחר רק כי הקובץ קיים שם).
+ * בלי תחום או עם UNC: קודם אות מהנתיב ב-DB, ואז שאר האל״ף־בי״ת.
+ */
 function buildDriveLetterOrder(scopePath: string | null | undefined, rowPath: string): string[] {
   const order: string[] = []
   const add = (L: string | null | undefined) => {
@@ -20,7 +24,12 @@ function buildDriveLetterOrder(scopePath: string | null | undefined, rowPath: st
   }
   if (scopePath) {
     try {
-      add(firstWindowsDriveLetterFromPath(normalizeSearchScopePath(scopePath)))
+      const scopeNorm = normalizeSearchScopePath(scopePath)
+      const scopeLetter = firstWindowsDriveLetterFromPath(scopeNorm)
+      if (scopeLetter) {
+        add(scopeLetter)
+        return order
+      }
     } catch {
       /* ignore */
     }

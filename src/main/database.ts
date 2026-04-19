@@ -1064,44 +1064,68 @@ export class TagDatabase {
     this.schedulePersist()
   }
 
+  renameTagFolder(folderId: number, newName: string): void {
+    const n = normalizeTagName(newName)
+    if (!n) throw new Error('שם תיקייה ריק')
+    const exists = this.db.prepare(
+      'SELECT id FROM tag_folders WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?'
+    )
+    exists.bind([n, folderId])
+    if (exists.step()) {
+      exists.free()
+      throw new Error('כבר קיימת תיקייה בשם הזה')
+    }
+    exists.free()
+    const cur = this.db.prepare('SELECT id FROM tag_folders WHERE id = ? AND deleted_at IS NULL')
+    cur.bind([folderId])
+    if (!cur.step()) {
+      cur.free()
+      throw new Error('התיקייה לא נמצאה')
+    }
+    cur.free()
+    this.db.run(`UPDATE tag_folders SET name = ?, updated_at = datetime('now') WHERE id = ?`, [n, folderId])
+    this.schedulePersist()
+  }
+
   setTagFolderForTag(tagId: number, folderId: number | null): void {
     const tid = Number(tagId)
     if (!Number.isFinite(tid) || tid <= 0) throw new Error('Invalid tag id')
-    this.db.run(
-      `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
-      [tid]
-    )
-    if (folderId !== null) {
-      const fid = Number(folderId)
-      if (!Number.isFinite(fid) || fid <= 0) throw new Error('Invalid folder id')
-      const ex = this.db.prepare(
-        'SELECT 1 FROM tag_folder_tags WHERE folder_id = ? AND tag_id = ? AND deleted_at IS NULL'
+
+    if (folderId === null) {
+      this.db.run(
+        `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
+        [tid]
       )
-      ex.bind([fid, tid])
-      const exists = ex.step()
-      ex.free()
-      if (exists) {
+      this.schedulePersist()
+      return
+    }
+
+    const fid = Number(folderId)
+    if (!Number.isFinite(fid) || fid <= 0) throw new Error('Invalid folder id')
+
+    /** יש UNIQUE(tag_id) — רק שורה אחת לכל תגית; לא מבצעים INSERT אחרי soft-delete (השורה עדיין קיימת). */
+    const cur = this.db.prepare('SELECT folder_id, deleted_at FROM tag_folder_tags WHERE tag_id = ?')
+    cur.bind([tid])
+    if (cur.step()) {
+      const r = cur.get() as [number, string | null]
+      cur.free()
+      const currentFid = Number(r[0])
+      const deletedAt = r[1]
+      if (deletedAt == null && currentFid === fid) {
         this.schedulePersist()
         return
       }
-      const dead = this.db.prepare(
-        'SELECT 1 FROM tag_folder_tags WHERE folder_id = ? AND tag_id = ? AND deleted_at IS NOT NULL'
+      this.db.run(
+        `UPDATE tag_folder_tags SET folder_id = ?, deleted_at = NULL, updated_at = datetime('now') WHERE tag_id = ?`,
+        [fid, tid]
       )
-      dead.bind([fid, tid])
-      if (dead.step()) {
-        dead.free()
-        this.db.run(
-          `UPDATE tag_folder_tags SET deleted_at = NULL, updated_at = datetime('now') WHERE folder_id = ? AND tag_id = ?`,
-          [fid, tid]
-        )
-        this.refreshTagFolderLinkUuids(fid, tid)
-      } else {
-        dead.free()
-        this.db.run(
-          `INSERT INTO tag_folder_tags (folder_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
-          [fid, tid, randomUUID()]
-        )
-      }
+      this.refreshTagFolderLinkUuids(fid, tid)
+    } else {
+      cur.free()
+      this.db.run(
+        `INSERT INTO tag_folder_tags (folder_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
+        [fid, tid, randomUUID()]
+      )
       this.refreshTagFolderLinkUuids(fid, tid)
     }
     this.schedulePersist()

@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
 import type { PathKind, TagFolderRow, TagRow } from '../../../../shared/types'
 import { FilePreview } from '../../components/FilePreview'
+import { TagFolderCard } from '../../components/TagFolderCard'
 import { kindHe, getFolderAccentStyle, type FolderAccentStyle } from '../folderAccent'
 
 export type LibraryTabPanelProps = {
@@ -145,22 +146,20 @@ export function LibraryTabPanel({
                   בחירה מתגיות קיימות:
                 </p>
                 {tagFolders.length > 0 && (
-                  <div className="chips" style={{ marginBottom: '0.35rem' }}>
+                  <div className="chips folder-cards" style={{ marginBottom: '0.35rem' }}>
                     {tagFolders.map((folder) => (
-                      <button
+                      <TagFolderCard
                         key={`library-folder-${folder.id}`}
-                        type="button"
-                        className={`chip folder-chip ${expandedLibraryFolderIds[folder.id] ? 'on' : ''}`}
-                        style={getFolderAccentStyle(folder.id)}
-                        onClick={() =>
+                        folder={folder}
+                        expanded={!!expandedLibraryFolderIds[folder.id]}
+                        accentStyle={getFolderAccentStyle(folder.id)}
+                        onToggle={() =>
                           setExpandedLibraryFolderIds((prev) => ({
                             ...prev,
                             [folder.id]: !prev[folder.id]
                           }))
                         }
-                      >
-                        {folder.name} ({folder.tagIds.length})
-                      </button>
+                      />
                     ))}
                   </div>
                 )}

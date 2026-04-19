@@ -1,7 +1,8 @@
-import type { Dispatch, SetStateAction } from 'react'
+import { useMemo, useState } from 'react'
 import { TableVirtuoso } from 'react-virtuoso'
 import type { SearchResultRow, TagFolderRow, TagRow } from '../../../../shared/types'
 import { FilePreview } from '../../components/FilePreview'
+import { TagFolderCard } from '../../components/TagFolderCard'
 import { getFolderAccentStyle, type FolderAccentStyle } from '../folderAccent'
 import {
   SEARCH_RESULT_SHAPE_LABEL,
@@ -27,8 +28,6 @@ export type SearchTabPanelProps = {
   setSearchFileTagDraft: (v: string) => void
   tags: TagRow[]
   tagFolders: TagFolderRow[]
-  expandedSearchFolderIds: Record<number, boolean>
-  setExpandedSearchFolderIds: Dispatch<SetStateAction<Record<number, boolean>>>
   folderIdByTagId: Map<number, number>
   onPickSearchScope: () => void | Promise<void>
   onRefreshSearchTagData: () => void | Promise<void>
@@ -45,6 +44,14 @@ export type SearchTabPanelProps = {
   addTagToSearchFile: (tagName: string, withFolderPrompt?: boolean) => void | Promise<void>
   removeTagFromSearchFile: (tagName: string) => void | Promise<void>
 }
+
+type FolderTagsModalState =
+  | { open: false }
+  | { open: true; kind: 'ungrouped' }
+  | { open: true; kind: 'folder'; folderId: number; folderName: string }
+
+/** מזהה סינתטי ל«ללא תיקייה» — לא מתנגש עם id אמיתי מהמסד */
+const UNGROUPED_FOLDER_ID = -1
 
 /** טאב חיפוש לפי תגיות, טבלת תוצאות ועריכת תגיות לקובץ נבחר */
 export function SearchTabPanel({
@@ -65,8 +72,6 @@ export function SearchTabPanel({
   setSearchFileTagDraft,
   tags,
   tagFolders,
-  expandedSearchFolderIds,
-  setExpandedSearchFolderIds,
   folderIdByTagId,
   onPickSearchScope,
   onRefreshSearchTagData,
@@ -87,8 +92,24 @@ export function SearchTabPanel({
   const querySummary =
     searchSelected.length > 0 ? searchSelected.map((t) => formatTagLabel(t)).join(' · ') : '—'
 
+  /** מודאל תגיות לפי תיקייה — נפתח מעל הכל */
+  const [folderTagsModal, setFolderTagsModal] = useState<FolderTagsModalState>({ open: false })
+  const [allTagsDrawerOpen, setAllTagsDrawerOpen] = useState(false)
+  const [drawerTagFilter, setDrawerTagFilter] = useState('')
+
+  const ungroupedTags = useMemo(
+    () => tags.filter((t) => !folderIdByTagId.has(t.id)),
+    [tags, folderIdByTagId]
+  )
+
+  const drawerFilteredTags = useMemo(() => {
+    const q = drawerTagFilter.trim().toLowerCase()
+    if (!q) return tags
+    return tags.filter((t) => t.name.toLowerCase().includes(q))
+  }, [tags, drawerTagFilter])
+
   return (
-    <section className="panel search-panel">
+    <section className="panel search-panel search-panel-root">
       <div className="search-page-layout">
         <aside className="search-sidebar" aria-label="סינון וחיפוש">
           <div className="search-sidebar-section field">
@@ -191,68 +212,68 @@ export function SearchTabPanel({
               </div>
             </div>
           )}
-          <p className="muted small" style={{ marginBottom: '0.35rem' }}>
-            בחירה מהירה מתוך תגיות קיימות במערכת:
-          </p>
-          {tagFolders.length > 0 && (
-            <div className="chips" style={{ marginBottom: '0.5rem' }}>
-              {tagFolders.map((folder) => (
-                <button
-                  key={folder.id}
-                  type="button"
-                  className={`chip folder-chip ${expandedSearchFolderIds[folder.id] ? 'on' : ''}`}
-                  style={getFolderAccentStyle(folder.id)}
-                  onClick={() =>
-                    setExpandedSearchFolderIds((prev) => ({
-                      ...prev,
-                      [folder.id]: !prev[folder.id]
-                    }))
-                  }
-                >
-                  {folder.name} ({folder.tagIds.length})
-                </button>
-              ))}
+          <div className="search-tags-widget">
+            <div className="search-tags-widget-head">
+              <button
+                type="button"
+                className="search-all-tags-hamburger"
+                title="כל התגיות — רשימה מלאה"
+                aria-expanded={allTagsDrawerOpen}
+                aria-label="פתח רשימת כל התגיות"
+                onClick={() => setAllTagsDrawerOpen(true)}
+              >
+                <svg viewBox="0 0 24 24" width={22} height={22} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path strokeLinecap="round" d="M4 7h16M4 12h16M4 17h16" />
+                </svg>
+              </button>
+              <span className="search-tags-widget-title">בחירה מהירה מתוך תגיות</span>
             </div>
-          )}
-          <div className="chips" style={{ marginBottom: '0.35rem' }}>
-            {tags
-              .filter((t) => !folderIdByTagId.has(t.id))
-              .map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
-                  style={getTagAccentStyle(t.name)}
-                  onClick={() => toggleQuickSearchTag(t.name)}
-                >
-                  {formatTagLabel(t.name)}
-                </button>
-              ))}
-          </div>
-          {tagFolders.map((folder) => {
-            if (!expandedSearchFolderIds[folder.id]) return null
-            const folderTags = tags.filter((t) => folderIdByTagId.get(t.id) === folder.id)
-            return (
-              <div key={`search-folder-${folder.id}`} className="chips" style={{ marginTop: '0.45rem' }}>
-                {folderTags.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
-                    style={getTagAccentStyle(t.name)}
-                    onClick={() => toggleQuickSearchTag(t.name)}
-                  >
-                    {formatTagLabel(t.name)}
-                  </button>
+            {tags.length === 0 && (
+              <p className="muted small" style={{ margin: '0.35rem 0 0' }}>
+                אין עדיין תגיות. הוסיפו קבצים או תיקיות מהספרייה.
+              </p>
+            )}
+            {tags.length > 0 && (
+              <div className="chips folder-cards search-search-quick-folder-cards" aria-label="תיקיות תגיות">
+                {ungroupedTags.length > 0 && (
+                  <TagFolderCard
+                    key="ungrouped"
+                    folder={{
+                      id: UNGROUPED_FOLDER_ID,
+                      name: 'ללא תיקייה',
+                      tagIds: ungroupedTags.map((t) => t.id)
+                    }}
+                    expanded={folderTagsModal.open && folderTagsModal.kind === 'ungrouped'}
+                    accentStyle={getFolderAccentStyle(UNGROUPED_FOLDER_ID)}
+                    onToggle={() =>
+                      setFolderTagsModal((m) =>
+                        m.open && m.kind === 'ungrouped' ? { open: false } : { open: true, kind: 'ungrouped' }
+                      )
+                    }
+                  />
+                )}
+                {tagFolders.map((folder) => (
+                  <TagFolderCard
+                    key={folder.id}
+                    folder={folder}
+                    expanded={
+                      folderTagsModal.open &&
+                      folderTagsModal.kind === 'folder' &&
+                      folderTagsModal.folderId === folder.id
+                    }
+                    accentStyle={getFolderAccentStyle(folder.id)}
+                    onToggle={() =>
+                      setFolderTagsModal((m) =>
+                        m.open && m.kind === 'folder' && m.folderId === folder.id
+                          ? { open: false }
+                          : { open: true, kind: 'folder', folderId: folder.id, folderName: folder.name }
+                      )
+                    }
+                  />
                 ))}
               </div>
-            )
-          })}
-          {tags.length === 0 && (
-            <p className="muted small" style={{ marginTop: '0.5rem' }}>
-              אין עדיין תגיות. הוסיפו קבצים או תיקיות מהספרייה.
-            </p>
-          )}
+            )}
+          </div>
         </aside>
 
         <div className="search-results-column">
@@ -272,8 +293,9 @@ export function SearchTabPanel({
             )}
             {searchLoading && <p className="muted small search-results-banner">מחפש…</p>}
             <div className="search-results-table-shell">
-              <div className="table-wrap search-results-table-wrap">
+              <div className="table-wrap search-results-table-wrap search-results-virtuoso-host">
                 <TableVirtuoso
+                  style={{ height: '100%', minHeight: 0 }}
                   data={searchResultsFiltered}
                   fixedHeaderContent={() => (
                     <tr>
@@ -374,6 +396,127 @@ export function SearchTabPanel({
           </div>
         </div>
       </div>
+
+      {folderTagsModal.open && (
+        <div
+          className="search-folder-tags-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="search-folder-tags-modal-title"
+          onClick={(e) => e.target === e.currentTarget && setFolderTagsModal({ open: false })}
+        >
+          <div className="overlay-card search-folder-tags-modal-card" onClick={(e) => e.stopPropagation()} dir="rtl">
+            <div className="search-folder-tags-modal-head">
+              <h2 id="search-folder-tags-modal-title" className="search-folder-tags-modal-title">
+                {folderTagsModal.kind === 'ungrouped' ? 'ללא תיקייה' : folderTagsModal.folderName}
+              </h2>
+              <button type="button" className="btn" onClick={() => setFolderTagsModal({ open: false })}>
+                סגור
+              </button>
+            </div>
+            <p className="muted small search-folder-tags-modal-hint">
+              לחצו על תגית כדי להוסיף או להסיר אותה מחיפוש המהיר.
+            </p>
+            <div className="search-folder-tags-modal-chips-wrap">
+              {(() => {
+                const pool =
+                  folderTagsModal.kind === 'ungrouped'
+                    ? ungroupedTags
+                    : tags.filter((t) => folderIdByTagId.get(t.id) === folderTagsModal.folderId)
+                if (pool.length === 0) {
+                  return <p className="muted small search-folder-tags-modal-empty">אין תגיות בתיקייה זו.</p>
+                }
+                return (
+                  <div className="chips">
+                    {pool.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
+                        style={getTagAccentStyle(t.name)}
+                        onClick={() => toggleQuickSearchTag(t.name)}
+                      >
+                        {formatTagLabel(t.name)}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {allTagsDrawerOpen && (
+        <div
+          className="search-all-tags-drawer-backdrop"
+          onClick={(e) => e.target === e.currentTarget && setAllTagsDrawerOpen(false)}
+        >
+          <div className="search-all-tags-drawer" onClick={(e) => e.stopPropagation()} dir="rtl">
+            <div className="search-all-tags-drawer-head">
+              <strong>כל התגיות</strong>
+              <button type="button" className="btn" onClick={() => setAllTagsDrawerOpen(false)}>
+                סגור
+              </button>
+            </div>
+            <div className="field" style={{ marginBottom: '0.65rem' }}>
+              <label htmlFor="search-drawer-tag-filter">סינון</label>
+              <input
+                id="search-drawer-tag-filter"
+                type="search"
+                className="search-sidebar-input"
+                placeholder="הקלד לסינון…"
+                value={drawerTagFilter}
+                onChange={(e) => setDrawerTagFilter(e.target.value)}
+              />
+            </div>
+            <div className="search-all-tags-drawer-body">
+              {ungroupedTags.length > 0 && (
+                <section className="search-all-tags-drawer-section">
+                  <h3 className="search-all-tags-drawer-section-title">ללא תיקייה</h3>
+                  <div className="chips">
+                    {drawerFilteredTags
+                      .filter((t) => !folderIdByTagId.has(t.id))
+                      .map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
+                          style={getTagAccentStyle(t.name)}
+                          onClick={() => toggleQuickSearchTag(t.name)}
+                        >
+                          {formatTagLabel(t.name)}
+                        </button>
+                      ))}
+                  </div>
+                </section>
+              )}
+              {tagFolders.map((folder) => {
+                const inFolder = drawerFilteredTags.filter((t) => folderIdByTagId.get(t.id) === folder.id)
+                if (inFolder.length === 0) return null
+                return (
+                  <section key={folder.id} className="search-all-tags-drawer-section">
+                    <h3 className="search-all-tags-drawer-section-title">{folder.name}</h3>
+                    <div className="chips">
+                      {inFolder.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className={getTagClassName(t.name, 'chip', searchSelected.includes(t.name))}
+                          style={getTagAccentStyle(t.name)}
+                          onClick={() => toggleQuickSearchTag(t.name)}
+                        >
+                          {formatTagLabel(t.name)}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedSearchPath && (
         <div

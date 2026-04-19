@@ -1,9 +1,12 @@
+import { useLayoutEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import type { TagFolderRow } from '../../../shared/types'
 import type { FolderAccentStyle } from './folderAccent'
 
 type TagFolderPickerState = { open: boolean; tagName: string; selectedFolderId: string }
 
 type SearchTagsModalState = { open: boolean; path: string; tags: string[] }
+
+export type RenameTagFolderModalState = { open: boolean; folderId: number; nameDraft: string }
 
 type IndexingState = { done: number; total: number; currentPath: string }
 
@@ -23,6 +26,9 @@ type Props = {
   getTagClassName: (tagName: string, baseClass: 'tag' | 'chip', isActive?: boolean) => string
   getTagAccentStyle: (tagName: string) => FolderAccentStyle | undefined
   formatTagLabel: (name: string) => string
+  renameTagFolderModal: RenameTagFolderModalState
+  setRenameTagFolderModal: Dispatch<SetStateAction<RenameTagFolderModalState>>
+  applyRenameTagFolder: () => void | Promise<void>
 }
 
 /** אוברליים גלובליים: אינדוקס, ייבוא, בחירת תיקייה לתגית, תצוגת כל התגיות מתוצאת חיפוש */
@@ -39,8 +45,27 @@ export function AppOverlays({
   setSearchTagsModal,
   getTagClassName,
   getTagAccentStyle,
-  formatTagLabel
+  formatTagLabel,
+  renameTagFolderModal,
+  setRenameTagFolderModal,
+  applyRenameTagFolder
 }: Props) {
+  const renameTagFolderInputRef = useRef<HTMLInputElement>(null)
+  useLayoutEffect(() => {
+    if (!renameTagFolderModal.open) return
+    /** rAF כפול — אחרי שהכרטיס נצבע; בלי select() כדי לא להפריע ל-IME בעברית */
+    let id2: number | undefined
+    const id1 = requestAnimationFrame(() => {
+      id2 = requestAnimationFrame(() => {
+        renameTagFolderInputRef.current?.focus()
+      })
+    })
+    return () => {
+      cancelAnimationFrame(id1)
+      if (id2 !== undefined) cancelAnimationFrame(id2)
+    }
+  }, [renameTagFolderModal.open, renameTagFolderModal.folderId])
+
   return (
     <>
       {indexing && (
@@ -122,6 +147,54 @@ export function AppOverlays({
                 אישור
               </button>
               <button type="button" className="btn" onClick={() => closeTagFolderPicker(undefined)}>
+                ביטול
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {renameTagFolderModal.open && (
+        <div
+          className="overlay"
+          onClick={(e) =>
+            e.target === e.currentTarget &&
+            setRenameTagFolderModal({ open: false, folderId: 0, nameDraft: '' })
+          }
+        >
+          <div className="overlay-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <strong>שינוי שם תיקייה</strong>
+            <p className="muted small" style={{ marginBottom: '0.5rem' }}>
+              הזינו שם חדש לתיקייה.
+            </p>
+            <div className="field">
+              <label htmlFor="rename-tag-folder-input">שם תיקייה</label>
+              <input
+                ref={renameTagFolderInputRef}
+                id="rename-tag-folder-input"
+                type="text"
+                value={renameTagFolderModal.nameDraft}
+                onChange={(e) =>
+                  setRenameTagFolderModal((prev) => ({ ...prev, nameDraft: e.target.value }))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void applyRenameTagFolder()
+                  }
+                }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <div className="toolbar" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+              <button type="button" className="btn primary" onClick={() => void applyRenameTagFolder()}>
+                שמור
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setRenameTagFolderModal({ open: false, folderId: 0, nameDraft: '' })}
+              >
                 ביטול
               </button>
             </div>

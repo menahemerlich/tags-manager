@@ -555,6 +555,15 @@ export function registerIpcHandlers(
     return { ok: true as const }
   })
 
+  ipcMain.handle('tag-folders:rename', async (_e, payload: { id: number; name: string }) => {
+    try {
+      getDb().renameTagFolder(payload.id, payload.name)
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: (e as Error).message || String(e) }
+    }
+  })
+
   ipcMain.handle('tag-folders:set-tag-folder', async (_e, payload: { tagId: number; folderId: number | null }) => {
     try {
       getDb().setTagFolderForTag(payload.tagId, payload.folderId)

@@ -15,6 +15,13 @@ export function isWindowsRuntime(): boolean {
   return false
 }
 
+/** אות כונן ראשונה מנתיב מוחלט `X:\...` (לא UNC / לא `\\?\`). */
+export function firstWindowsDriveLetterFromPath(absolutePath: string): string | null {
+  if (!isWindowsRuntime()) return null
+  const m = /^([A-Za-z]):/.exec(absolutePath.replace(/\//g, '\\').trim())
+  return m ? m[1].toUpperCase() : null
+}
+
 export function sanitizePathInput(p: string): string {
   if (typeof p !== 'string') return ''
   return p

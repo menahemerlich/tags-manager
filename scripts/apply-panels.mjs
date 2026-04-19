@@ -51,8 +51,6 @@ const search = `{tab === 'search' && (
             setSearchFileTagDraft={setSearchFileTagDraft}
             tags={tags}
             tagFolders={tagFolders}
-            expandedSearchFolderIds={expandedSearchFolderIds}
-            setExpandedSearchFolderIds={setExpandedSearchFolderIds}
             folderIdByTagId={folderIdByTagId}
             onPickSearchScope={handlePickSearchScope}
             onRefreshSearchTagData={refreshSearchTagData}
@@ -82,9 +80,8 @@ const tags = `{tab === 'tags' && (
             tags={tags}
             expandedTagFolderIds={expandedTagFolderIds}
             setExpandedTagFolderIds={setExpandedTagFolderIds}
-            openTagFolderMenuId={openTagFolderMenuId}
-            setOpenTagFolderMenuId={setOpenTagFolderMenuId}
             folderIdByTagId={folderIdByTagId}
+            renameTagFolder={renameTagFolder}
             deleteTagFolder={deleteTagFolder}
             assignTagToFolder={assignTagToFolder}
             onTagsChanged={async () => {
