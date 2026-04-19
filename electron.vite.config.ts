@@ -11,16 +11,10 @@ export default defineConfig({
   },
   renderer: {
     publicDir: resolve('src/renderer/public'),
-    /** ברנדרר אין node:path — משתמשים ב-polyfill כדי ש-shared/pathUtils יעבוד ב-Vite. */
     resolve: {
       alias: {
-        '@renderer': resolve('src/renderer/src'),
-        'node:path': resolve('node_modules/path-browserify'),
-        path: resolve('node_modules/path-browserify')
+        '@renderer': resolve('src/renderer/src')
       }
-    },
-    optimizeDeps: {
-      include: ['path-browserify']
     },
     plugins: [react()]
   }

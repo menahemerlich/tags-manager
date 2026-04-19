@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizePath } from './pathUtils'
+import { normalizePath } from './pathUtilsSearchClient'
 import { pathMatchesSearchScope } from './searchScopeMatch'
 
 describe.runIf(process.platform === 'win32')('pathMatchesSearchScope (Windows)', () => {

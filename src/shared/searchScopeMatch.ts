@@ -4,7 +4,7 @@ import {
   normalizePath,
   normalizeSearchScopePath,
   pathDrivelessKey
-} from './pathUtils'
+} from './pathUtilsSearchClient'
 
 /**
  * האם נתיב תוצאה נמצא בתחום החיפוש — ב-Windows לפי מפתח ללא אות כונן כשאפשר, אחרת prefix על נתיב מלא.

@@ -1,5 +1,5 @@
 import type { SearchResultRow } from '../../../../shared/types'
-import { resolvePathForSearchScope } from '../../../../shared/pathUtils'
+import { resolvePathForSearchScope } from '../../../../shared/pathUtilsSearchClient'
 import { pathMatchesSearchScope } from '../../../../shared/searchScopeMatch'
 import { classifySearchResultShape, type SearchResultShapeId } from './searchResultShapeFilter'
 
