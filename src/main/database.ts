@@ -1064,44 +1064,68 @@ export class TagDatabase {
     this.schedulePersist()
   }
 
+  renameTagFolder(folderId: number, newName: string): void {
+    const n = normalizeTagName(newName)
+    if (!n) throw new Error('שם תיקייה ריק')
+    const exists = this.db.prepare(
+      'SELECT id FROM tag_folders WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL AND id != ?'
+    )
+    exists.bind([n, folderId])
+    if (exists.step()) {
+      exists.free()
+      throw new Error('כבר קיימת תיקייה בשם הזה')
+    }
+    exists.free()
+    const cur = this.db.prepare('SELECT id FROM tag_folders WHERE id = ? AND deleted_at IS NULL')
+    cur.bind([folderId])
+    if (!cur.step()) {
+      cur.free()
+      throw new Error('התיקייה לא נמצאה')
+    }
+    cur.free()
+    this.db.run(`UPDATE tag_folders SET name = ?, updated_at = datetime('now') WHERE id = ?`, [n, folderId])
+    this.schedulePersist()
+  }
+
   setTagFolderForTag(tagId: number, folderId: number | null): void {
     const tid = Number(tagId)
     if (!Number.isFinite(tid) || tid <= 0) throw new Error('Invalid tag id')
-    this.db.run(
-      `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
-      [tid]
-    )
-    if (folderId !== null) {
-      const fid = Number(folderId)
-      if (!Number.isFinite(fid) || fid <= 0) throw new Error('Invalid folder id')
-      const ex = this.db.prepare(
-        'SELECT 1 FROM tag_folder_tags WHERE folder_id = ? AND tag_id = ? AND deleted_at IS NULL'
+
+    if (folderId === null) {
+      this.db.run(
+        `UPDATE tag_folder_tags SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE tag_id = ? AND deleted_at IS NULL`,
+        [tid]
       )
-      ex.bind([fid, tid])
-      const exists = ex.step()
-      ex.free()
-      if (exists) {
+      this.schedulePersist()
+      return
+    }
+
+    const fid = Number(folderId)
+    if (!Number.isFinite(fid) || fid <= 0) throw new Error('Invalid folder id')
+
+    /** יש UNIQUE(tag_id) — רק שורה אחת לכל תגית; לא מבצעים INSERT אחרי soft-delete (השורה עדיין קיימת). */
+    const cur = this.db.prepare('SELECT folder_id, deleted_at FROM tag_folder_tags WHERE tag_id = ?')
+    cur.bind([tid])
+    if (cur.step()) {
+      const r = cur.get() as [number, string | null]
+      cur.free()
+      const currentFid = Number(r[0])
+      const deletedAt = r[1]
+      if (deletedAt == null && currentFid === fid) {
         this.schedulePersist()
         return
       }
-      const dead = this.db.prepare(
-        'SELECT 1 FROM tag_folder_tags WHERE folder_id = ? AND tag_id = ? AND deleted_at IS NOT NULL'
+      this.db.run(
+        `UPDATE tag_folder_tags SET folder_id = ?, deleted_at = NULL, updated_at = datetime('now') WHERE tag_id = ?`,
+        [fid, tid]
       )
-      dead.bind([fid, tid])
-      if (dead.step()) {
-        dead.free()
-        this.db.run(
-          `UPDATE tag_folder_tags SET deleted_at = NULL, updated_at = datetime('now') WHERE folder_id = ? AND tag_id = ?`,
-          [fid, tid]
-        )
-        this.refreshTagFolderLinkUuids(fid, tid)
-      } else {
-        dead.free()
-        this.db.run(
-          `INSERT INTO tag_folder_tags (folder_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
-          [fid, tid, randomUUID()]
-        )
-      }
+      this.refreshTagFolderLinkUuids(fid, tid)
+    } else {
+      cur.free()
+      this.db.run(
+        `INSERT INTO tag_folder_tags (folder_id, tag_id, uuid, created_at, updated_at, deleted_at) VALUES (?, ?, ?, datetime('now'), datetime('now'), NULL)`,
+        [fid, tid, randomUUID()]
+      )
       this.refreshTagFolderLinkUuids(fid, tid)
     }
     this.schedulePersist()
@@ -1719,27 +1743,29 @@ export class TagDatabase {
     return { appliedCount, skippedCount }
   }
 
-  searchFilesByTagIds(requiredTagIds: number[]): SearchResult {
+  /** חיפוש עם הפסקות ל-event loop כדי שהחלון לא ייתקע בזמן שאילתות כבדות. */
+  async searchFilesByTagIds(requiredTagIds: number[]): Promise<SearchResult> {
+    const yieldToUi = () => new Promise<void>((r) => setImmediate(r))
     const idToName = this.loadTagIdToName()
     const pathTagMap = this.loadPathTagIdMap()
     const exclusionMap = this.loadPathExclusionMap()
     const candidates = this.loadSearchCandidatePaths()
     /** תיקיות לפני קבצים; דדופ לפי path_driveless ב־Windows כדי לא להציג אותו פריט פעמיים אחרי החלפת אות. */
-    const searchCandidatesOrdered = (() => {
-      const seenDedupe = new Set<string>()
-      const deduped: { path: string; kind: PathKind; pathDriveless: string | null }[] = []
-      for (const c of candidates) {
-        const np = normalizePath(c.path)
-        const pd = c.pathDriveless ?? pathDrivelessKey(np)
-        const dedupeKey = pd ?? np
-        if (seenDedupe.has(dedupeKey)) continue
-        seenDedupe.add(dedupeKey)
-        deduped.push({ path: np, kind: c.kind, pathDriveless: pd })
-      }
-      const folders = deduped.filter((c) => c.kind === 'folder').sort((a, b) => a.path.localeCompare(b.path))
-      const files = deduped.filter((c) => c.kind === 'file').sort((a, b) => a.path.localeCompare(b.path))
-      return [...folders, ...files]
-    })()
+    const seenDedupe = new Set<string>()
+    const deduped: { path: string; kind: PathKind; pathDriveless: string | null }[] = []
+    for (let i = 0; i < candidates.length; i++) {
+      if (i > 0 && i % 512 === 0) await yieldToUi()
+      const c = candidates[i]
+      const np = normalizePath(c.path)
+      const pd = c.pathDriveless ?? pathDrivelessKey(np)
+      const dedupeKey = pd ?? np
+      if (seenDedupe.has(dedupeKey)) continue
+      seenDedupe.add(dedupeKey)
+      deduped.push({ path: np, kind: c.kind, pathDriveless: pd })
+    }
+    const folders = deduped.filter((c) => c.kind === 'folder').sort((a, b) => a.path.localeCompare(b.path))
+    const files = deduped.filter((c) => c.kind === 'file').sort((a, b) => a.path.localeCompare(b.path))
+    const searchCandidatesOrdered = [...folders, ...files]
 
     const rowFromCandidate = (c: { path: string; kind: PathKind; pathDriveless: string | null }, eff: Set<number>) => ({
       path: c.path,
@@ -1752,18 +1778,22 @@ export class TagDatabase {
     })
 
     if (requiredTagIds.length === 0) {
-      const rows = searchCandidatesOrdered
-        .slice(0, SEARCH_RESULT_LIMIT)
-        .map((c) =>
-          rowFromCandidate(c, this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap))
-        )
+      const slice = searchCandidatesOrdered.slice(0, SEARCH_RESULT_LIMIT)
+      const rows: SearchResultRow[] = []
+      for (let i = 0; i < slice.length; i++) {
+        if (i > 0 && i % 64 === 0) await yieldToUi()
+        const c = slice[i]
+        rows.push(rowFromCandidate(c, this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap)))
+      }
       return { rows, truncated: searchCandidatesOrdered.length > SEARCH_RESULT_LIMIT }
     }
 
     const required = new Set(requiredTagIds)
     const out: SearchResultRow[] = []
 
-    for (const c of searchCandidatesOrdered) {
+    for (let i = 0; i < searchCandidatesOrdered.length; i++) {
+      if (i > 0 && i % 96 === 0) await yieldToUi()
+      const c = searchCandidatesOrdered[i]
       if (out.length >= SEARCH_RESULT_LIMIT) break
       const eff = this.effectiveTagIdsForFile(c.path, pathTagMap, exclusionMap)
       let ok = true
@@ -1784,7 +1814,10 @@ export class TagDatabase {
     const folderStmt = this.db.prepare(
       `SELECT id, path, path_driveless FROM paths WHERE deleted_at IS NULL AND kind = 'folder'`
     )
+    let folderStep = 0
     while (folderStmt.step()) {
+      folderStep += 1
+      if (folderStep > 1 && folderStep % 48 === 0) await yieldToUi()
       if (out.length >= SEARCH_RESULT_LIMIT) break
       const fr = folderStmt.get()
       const pathId = fr[0] as number

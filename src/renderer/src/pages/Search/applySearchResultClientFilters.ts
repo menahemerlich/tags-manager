@@ -1,10 +1,6 @@
 import type { SearchResultRow } from '../../../../shared/types'
-import {
-  drivelessItemUnderScope,
-  normalizePath,
-  pathDrivelessKey,
-  resolvePathForSearchScope
-} from '../../../../shared/pathUtils'
+import { resolvePathForSearchScope } from '../../../../shared/pathUtilsSearchClient'
+import { pathMatchesSearchScope } from '../../../../shared/searchScopeMatch'
 import { classifySearchResultShape, type SearchResultShapeId } from './searchResultShapeFilter'
 
 /** פרמטרים לסינון תוצאות חיפוש בצד הלקוח (אחרי IPC). */
@@ -16,27 +12,6 @@ export type SearchClientFilterOptions = {
    * אם נבחר רק `folders` — רק תיקיות. אחרת — OR בין קטגוריות לקבצים; תיקיות לא מוצגות.
    */
   contentShapes: ReadonlySet<SearchResultShapeId>
-}
-
-/** האם נתיב התוצאה נמצא בתחום החיפוש שנבחר. */
-function matchesScope(
-  rowPath: string,
-  scopePath: string | null,
-  pathDriveless?: string | null
-): boolean {
-  if (!scopePath) return true
-  const base = normalizePath(scopePath).replace(/[/\\]+$/, '')
-  const sk = pathDrivelessKey(base)
-  const rowDl = pathDriveless ?? pathDrivelessKey(normalizePath(rowPath))
-  if (sk != null && rowDl != null) {
-    return drivelessItemUnderScope(rowDl, sk)
-  }
-  const sep = base.includes('\\') ? '\\' : '/'
-  const prefix = /[\\/]+$/.test(base) ? base : base + sep
-  const rp = normalizePath(rowPath)
-  const pathCmp = process.platform === 'win32' ? rp.toLowerCase() : rp
-  const scopeCmp = process.platform === 'win32' ? base.toLowerCase() : base
-  return pathCmp === scopeCmp || pathCmp.startsWith(prefix)
 }
 
 /**
@@ -52,7 +27,7 @@ export function applySearchResultClientFilters(
 
   return rows
     .filter((row) => {
-      if (!matchesScope(row.path, scope, row.pathDriveless)) return false
+      if (!pathMatchesSearchScope(row.path, scope, row.pathDriveless)) return false
       if (!active) return true
 
       if (sel.has('folders')) {
@@ -67,8 +42,12 @@ export function applySearchResultClientFilters(
     })
     .map((row) => {
       if (!scope) return row
-      const resolved = resolvePathForSearchScope(scope, row.path, row.pathDriveless ?? null)
-      if (resolved === row.path) return row
-      return { ...row, path: resolved }
+      try {
+        const resolved = resolvePathForSearchScope(scope, row.path, row.pathDriveless ?? null)
+        if (resolved === row.path) return row
+        return { ...row, path: resolved }
+      } catch {
+        return row
+      }
     })
 }

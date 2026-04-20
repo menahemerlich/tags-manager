@@ -28,6 +28,11 @@
     "semver": "^7.6.3",
     "sql.js": "^1.12.0"
   },
+  "overrides": {
+    "wcwidth": "1.0.1",
+    "promise-inflight": "1.0.1",
+    "path-is-absolute": "1.0.1"
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",

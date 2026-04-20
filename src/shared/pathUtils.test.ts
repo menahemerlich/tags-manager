@@ -5,10 +5,12 @@ import {
   ancestorDrivelessDirs,
   drivelessItemUnderScope,
   normalizePath,
+  normalizeSearchScopePath,
   pathDrivelessKey,
   pathDrivelessKeyNormalized,
   resolvePathForSearchScope,
-  sanitizePathInput
+  sanitizePathInput,
+  windowsAbsoluteFromDriveLetter
 } from './pathUtils'
 
 describe('sanitizePathInput', () => {
@@ -70,6 +72,20 @@ describe('drivelessItemUnderScope', () => {
   it('whole-drive scope', () => {
     expect(drivelessItemUnderScope('\\x', '\\')).toBe(true)
     expect(drivelessItemUnderScope('\\', '\\')).toBe(false)
+  })
+})
+
+describe.runIf(process.platform === 'win32')('windowsAbsoluteFromDriveLetter', () => {
+  it('builds drive root and nested paths', () => {
+    expect(windowsAbsoluteFromDriveLetter('E', '\\')).toBe('E:\\')
+    expect(windowsAbsoluteFromDriveLetter('e', '\\a\\b')).toBe('E:\\a\\b')
+  })
+})
+
+describe.runIf(process.platform === 'win32')('normalizeSearchScopePath', () => {
+  it('keeps drive root as X:\\ not bare X:', () => {
+    expect(normalizeSearchScopePath('D:\\')).toMatch(/^D:\\$/i)
+    expect(pathDrivelessKeyNormalized(normalizeSearchScopePath('D:\\'))).toBe('\\')
   })
 })
 

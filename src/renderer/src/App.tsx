@@ -1,4 +1,5 @@
 ﻿import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -51,8 +52,6 @@ export default function App() {
   const [newTagFolderName, setNewTagFolderName] = useState('')
   const [expandedTagFolderIds, setExpandedTagFolderIds] = useState<Record<number, boolean>>({})
   const [expandedLibraryFolderIds, setExpandedLibraryFolderIds] = useState<Record<number, boolean>>({})
-  const [expandedSearchFolderIds, setExpandedSearchFolderIds] = useState<Record<number, boolean>>({})
-  const [openTagFolderMenuId, setOpenTagFolderMenuId] = useState<number | null>(null)
   const [libraryTagFolderByName, setLibraryTagFolderByName] = useState<Record<string, number | null>>({})
   const [searchTagsModal, setSearchTagsModal] = useState<{ open: boolean; path: string; tags: string[] }>({
     open: false,
@@ -64,6 +63,11 @@ export default function App() {
     tagName: '',
     selectedFolderId: ''
   })
+  const [renameTagFolderModal, setRenameTagFolderModal] = useState<{
+    open: boolean
+    folderId: number
+    nameDraft: string
+  }>({ open: false, folderId: 0, nameDraft: '' })
   const [searchSelected, setSearchSelected] = useState<string[]>([])
   const [searchDraft, setSearchDraft] = useState('')
   const [searchScope, setSearchScope] = useState<string | null>(null)
@@ -139,14 +143,6 @@ export default function App() {
   }, [])
 
   const transferProgressPercent = transferProgressPercentFromStage(transferProgress)
-
-  useEffect(() => {
-    if (openTagFolderMenuId === null) return
-
-    const closeMenu = () => setOpenTagFolderMenuId(null)
-    document.addEventListener('pointerdown', closeMenu)
-    return () => document.removeEventListener('pointerdown', closeMenu)
-  }, [openTagFolderMenuId])
 
   function addLibraryTag(name: string) {
     const n = normalizeTagName(name)
@@ -272,8 +268,12 @@ export default function App() {
   }
 
   async function handlePickSearchScope() {
-    const folder = await window.api.pickFolder()
-    if (folder) setSearchScope(folder)
+    try {
+      const folder = await window.api.pickFolder()
+      if (folder) setSearchScope(folder)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   async function handleCancelIndex() {
@@ -285,26 +285,50 @@ export default function App() {
     setSearchLoading(true)
     try {
       const res = await window.api.search(searchSelected)
-      setSearchResults(res.rows)
-      setSearchTruncated(res.truncated ?? false)
+      const displayRows = await window.api.resolveSearchDisplayPaths(res.rows, searchScope)
+      startTransition(() => {
+        setSearchResults(displayRows)
+        setSearchTruncated(res.truncated ?? false)
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSearchLoading(false)
     }
-  }, [searchSelected])
+  }, [searchSelected, searchScope])
 
+  const runSearchRef = useRef(runSearch)
+  runSearchRef.current = runSearch
+
+  const prevTagsRef = useRef<TagRow[] | undefined>(undefined)
+
+  /**
+   * עדכון רשימת תגיות (רענון/עריכה) → חיפוש מיידי.
+   * שינוי בחירת תגיות לחיפוש או תחום → debounce ~300ms (מפחית חיפוש+resolve כבדים בשרשרת קליקים על צ׳יפים).
+   */
   useEffect(() => {
-    void runSearch()
-  }, [runSearch, tags])
+    const isFirstPass = prevTagsRef.current === undefined
+    const tagsChanged = !isFirstPass && prevTagsRef.current !== tags
+    prevTagsRef.current = tags
+
+    if (tagsChanged || isFirstPass) {
+      void runSearchRef.current()
+      return
+    }
+    const t = setTimeout(() => {
+      void runSearchRef.current()
+    }, 300)
+    return () => clearTimeout(t)
+  }, [tags, searchSelected, searchScope])
 
   useEffect(() => {
     const onUserDataReloaded = () => {
       void refreshTags()
       void refreshTagFolders()
-      void runSearch()
     }
     window.addEventListener('tags-manager:user-data-reloaded', onUserDataReloaded)
     return () => window.removeEventListener('tags-manager:user-data-reloaded', onUserDataReloaded)
-  }, [refreshTagFolders, refreshTags, runSearch])
+  }, [refreshTagFolders, refreshTags])
 
   const toggleSearchContentShape = useCallback((id: SearchResultShapeId) => {
     setSearchContentFilterSelection((prev) => {
@@ -448,6 +472,33 @@ export default function App() {
     setExpandedTagFolderIds((prev) => ({ ...prev, [res.id]: true }))
   }
 
+  function renameTagFolder(folder: TagFolderRow) {
+    setRenameTagFolderModal({ open: true, folderId: folder.id, nameDraft: folder.name })
+  }
+
+  async function applyRenameTagFolder() {
+    const { folderId, nameDraft } = renameTagFolderModal
+    const n = normalizeTagName(nameDraft)
+    const prev = tagFolders.find((f) => f.id === folderId)
+    if (!prev) {
+      setRenameTagFolderModal({ open: false, folderId: 0, nameDraft: '' })
+      return
+    }
+    if (!n || n === prev.name) {
+      setRenameTagFolderModal({ open: false, folderId: 0, nameDraft: '' })
+      return
+    }
+    setError(null)
+    const res = await window.api.renameTagFolder(folderId, n)
+    if (!res.ok) {
+      setError(res.error)
+      return
+    }
+    setRenameTagFolderModal({ open: false, folderId: 0, nameDraft: '' })
+    /** רק רשימת תיקיות — בלי runSearch (חיפוש מלא + resolve נתיבים כבד מאוד ולא נדרש לשינוי שם תיקייה) */
+    void refreshTagFolders()
+  }
+
   async function deleteTagFolder(folder: TagFolderRow) {
     const folderTagNames = tags
       .filter((tag) => folder.tagIds.includes(tag.id))
@@ -461,7 +512,6 @@ export default function App() {
     if (!confirmed) return
 
     setError(null)
-    setOpenTagFolderMenuId(null)
     await window.api.deleteTagFolder(folder.id)
 
     setExpandedTagFolderIds((prev) => {
@@ -474,11 +524,6 @@ export default function App() {
       delete next[folder.id]
       return next
     })
-    setExpandedSearchFolderIds((prev) => {
-      const next = { ...prev }
-      delete next[folder.id]
-      return next
-    })
     setLibraryTagFolderByName((prev) => {
       const next = { ...prev }
       for (const name of folderTagNames) next[name.toLowerCase()] = null
@@ -487,7 +532,6 @@ export default function App() {
 
     await refreshTags()
     await refreshTagFolders()
-    void runSearch()
   }
 
   async function assignTagToFolder(tagId: number, folderIdRaw: string) {
@@ -564,7 +608,6 @@ export default function App() {
   async function refreshSearchTagData(): Promise<void> {
     await refreshTags()
     await refreshTagFolders()
-    await runSearch()
   }
 
   const openPreviewInWatermarkTab = useCallback((path: string) => {
@@ -682,7 +725,6 @@ export default function App() {
     }
     setSelectedSearchDirectTags((prev) => [...prev, n].sort((a, b) => a.localeCompare(b)))
     await refreshTags()
-    void runSearch()
   }
 
   async function removeTagFromSearchFile(tagName: string) {
@@ -693,7 +735,6 @@ export default function App() {
     else {
       setSelectedSearchDirectTags((prev) => prev.filter((t) => t !== tagName))
       await refreshTags()
-      void runSearch()
     }
   }
 
@@ -745,8 +786,6 @@ export default function App() {
           setSearchFileTagDraft,
           tags,
           tagFolders,
-          expandedSearchFolderIds,
-          setExpandedSearchFolderIds,
           folderIdByTagId,
           onPickSearchScope: handlePickSearchScope,
           onRefreshSearchTagData: refreshSearchTagData,
@@ -771,9 +810,8 @@ export default function App() {
           tags,
           expandedTagFolderIds,
           setExpandedTagFolderIds,
-          openTagFolderMenuId,
-          setOpenTagFolderMenuId,
           folderIdByTagId,
+          renameTagFolder,
           deleteTagFolder,
           assignTagToFolder,
           onTagsChanged: async () => {
@@ -833,6 +871,9 @@ export default function App() {
         getTagClassName={getTagClassName}
         getTagAccentStyle={getTagAccentStyle}
         formatTagLabel={formatTagLabel}
+        renameTagFolderModal={renameTagFolderModal}
+        setRenameTagFolderModal={setRenameTagFolderModal}
+        applyRenameTagFolder={applyRenameTagFolder}
       />
 
 

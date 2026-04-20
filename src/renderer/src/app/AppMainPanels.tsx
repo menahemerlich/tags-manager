@@ -36,7 +36,7 @@ export function AppMainPanels({
   onWatermarkOpenFromPreviewHandled
 }: AppMainPanelsProps) {
   return (
-    <main className="main">
+    <main className={tab === 'search' ? 'main main--search' : 'main'}>
       {error && (
         <p className="muted" style={{ color: 'var(--danger)', marginTop: 0 }}>
           {error}

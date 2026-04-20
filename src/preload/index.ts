@@ -29,6 +29,7 @@ import type {
   TagImportApplyPayload,
   TagImportPreview,
   TagRow,
+  SearchResultRow,
   TagFolderRow,
   ImportProgress,
   TransferPackageProgress,
@@ -72,6 +73,8 @@ const api = {
   createTagFolder: (name: string) =>
     ipcRenderer.invoke('tag-folders:create', name) as Promise<{ ok: true; id: number } | { ok: false; error: string }>,
   deleteTagFolder: (id: number) => ipcRenderer.invoke('tag-folders:delete', id) as Promise<{ ok: true }>,
+  renameTagFolder: (id: number, name: string) =>
+    ipcRenderer.invoke('tag-folders:rename', { id, name }) as Promise<{ ok: true } | { ok: false; error: string }>,
   setTagFolderForTag: (tagId: number, folderId: number | null) =>
     ipcRenderer.invoke('tag-folders:set-tag-folder', { tagId, folderId }) as Promise<
       { ok: true } | { ok: false; error: string }
@@ -81,6 +84,8 @@ const api = {
   deleteTag: (id: number) => ipcRenderer.invoke('tags:delete', id) as Promise<{ ok: true }>,
   search: (tagNames: string[]) =>
     ipcRenderer.invoke('search:query', tagNames) as Promise<SearchResult>,
+  resolveSearchDisplayPaths: (rows: SearchResultRow[], searchScope?: string | null) =>
+    ipcRenderer.invoke('paths:resolve-search-display', rows, searchScope ?? null) as Promise<SearchResultRow[]>,
   getSettings: () => ipcRenderer.invoke('settings:get') as Promise<AppSettings>,
   setSettings: (s: AppSettings) => ipcRenderer.invoke('settings:set', s) as Promise<{ ok: true }>,
   packageAppForTransfer: (options: PackageAppForTransferOptions) =>

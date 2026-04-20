@@ -1,0 +1,38 @@
+import {
+  drivelessItemUnderScope,
+  firstWindowsDriveLetterFromPath,
+  isWindowsRuntime,
+  normalizePath,
+  normalizeSearchScopePath,
+  pathDrivelessKey
+} from './pathUtilsSearchClient'
+
+/**
+ * האם נתיב תוצאה נמצא בתחום החיפוש — ב-Windows לפי מפתח ללא אות כונן כשאפשר, אחרת prefix על נתיב מלא.
+ * כשיש אות כונן גם בתחום וגם בשורה — חייבים להתאים (לא מציגים D: כשחיפשו רק F:).
+ */
+export function pathMatchesSearchScope(
+  rowPath: string,
+  scopePath: string | null,
+  pathDriveless?: string | null
+): boolean {
+  if (!scopePath) return true
+  const base = normalizeSearchScopePath(scopePath)
+  const scopeDrive = firstWindowsDriveLetterFromPath(base)
+  const rowNorm = normalizePath(rowPath)
+  const rowDrive = firstWindowsDriveLetterFromPath(rowNorm)
+  if (isWindowsRuntime() && scopeDrive && rowDrive && scopeDrive !== rowDrive) {
+    return false
+  }
+  const sk = pathDrivelessKey(base)
+  const rowDl = pathDriveless ?? pathDrivelessKey(rowNorm)
+  if (sk != null && rowDl != null) {
+    return drivelessItemUnderScope(rowDl, sk)
+  }
+  const sep = base.includes('\\') ? '\\' : '/'
+  const prefix = /[\\/]+$/.test(base) ? base : base + sep
+  const rp = rowNorm
+  const pathCmp = isWindowsRuntime() ? rp.toLowerCase() : rp
+  const scopeCmp = isWindowsRuntime() ? base.toLowerCase() : base
+  return pathCmp === scopeCmp || pathCmp.startsWith(prefix)
+}
