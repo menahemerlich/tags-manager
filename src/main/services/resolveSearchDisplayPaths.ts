@@ -87,17 +87,17 @@ export async function resolveSearchResultRowsDisplayPaths(
       /* ignore */
     }
     if (!isWindowsRuntime()) {
-      out.push(row)
+      out.push({ ...row, missing: true })
       continue
     }
     const dl = row.pathDriveless ?? pathDrivelessKey(norm)
     if (!dl) {
-      out.push(row)
+      out.push({ ...row, missing: true })
       continue
     }
     const L = resolveLetterForDriveless(dl, row.path)
     if (!L) {
-      out.push(row)
+      out.push({ ...row, missing: true })
       continue
     }
     out.push({ ...row, path: windowsAbsoluteFromDriveLetter(L, dl) })
