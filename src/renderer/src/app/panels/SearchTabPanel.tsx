@@ -403,6 +403,7 @@ export function SearchTabPanel({
           role="dialog"
           aria-modal="true"
           aria-labelledby="search-folder-tags-modal-title"
+          aria-describedby="search-folder-tags-modal-hint"
           onClick={(e) => e.target === e.currentTarget && setFolderTagsModal({ open: false })}
         >
           <div className="overlay-card search-folder-tags-modal-card" onClick={(e) => e.stopPropagation()} dir="rtl">
@@ -414,7 +415,7 @@ export function SearchTabPanel({
                 סגור
               </button>
             </div>
-            <p className="muted small search-folder-tags-modal-hint">
+            <p id="search-folder-tags-modal-hint" className="muted small search-folder-tags-modal-hint">
               לחצו על תגית כדי להוסיף או להסיר אותה מחיפוש המהיר.
             </p>
             <div className="search-folder-tags-modal-chips-wrap">
