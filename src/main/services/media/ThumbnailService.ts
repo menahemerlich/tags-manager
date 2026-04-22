@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { statSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { App } from 'electron'
 import ffmpeg, { type FfprobeData } from 'fluent-ffmpeg'
@@ -26,13 +27,43 @@ function isImageExt(ext: string): boolean {
   return ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(ext)
 }
 
+function safeAppNameForFs(app: App): string {
+  const raw = app.getName?.() || 'app'
+  return raw.replace(/[^\w.-]+/g, '-')
+}
+
+/**
+ * מנסה ליצור תיקיית cache לתמונות ממוזערות תחת userData.
+ * אם חסומות הרשאות (EPERM) — נופל חזרה ל-temp (כדי לא להפיל את האפליקציה במצב dev).
+ */
+export function getThumbnailCacheDir(app: App): string {
+  const preferred = join(app.getPath('userData'), 'cache', 'thumbnails')
+  try {
+    mkdirSync(preferred, { recursive: true })
+    return preferred
+  } catch (e) {
+    const fallback = join(tmpdir(), safeAppNameForFs(app), 'cache', 'thumbnails')
+    try {
+      mkdirSync(fallback, { recursive: true })
+      console.warn(
+        `[thumb-cache] cannot create preferred dir, using temp fallback: ${preferred} -> ${fallback}`,
+        e
+      )
+      return fallback
+    } catch (e2) {
+      console.warn(`[thumb-cache] cannot create fallback dir either: ${fallback}`, e2)
+      // Last resort: return preferred; subsequent writes will fail but we won't crash on startup.
+      return preferred
+    }
+  }
+}
+
 export class ThumbnailService {
   private readonly ffmpegQueue = new FfmpegQueue(3)
   private readonly cacheDir: string
 
   constructor(private readonly app: App) {
-    this.cacheDir = join(this.app.getPath('userData'), 'cache', 'thumbnails')
-    mkdirSync(this.cacheDir, { recursive: true })
+    this.cacheDir = getThumbnailCacheDir(this.app)
 
     const tools = locateMediaTools(this.app)
     if (tools.ffmpeg) ffmpeg.setFfmpegPath(tools.ffmpeg)
