@@ -291,107 +291,125 @@ export function SearchTabPanel({
             {searchSelected.length > 0 && !searchTruncated && !searchLoading && searchResultsFiltered.length === 0 && (
               <p className="muted small search-results-banner">אין תוצאות.</p>
             )}
-            {searchLoading && <p className="muted small search-results-banner">מחפש…</p>}
             <div className="search-results-table-shell">
-              <div className="table-wrap search-results-table-wrap search-results-virtuoso-host">
-                <TableVirtuoso
-                  style={{ height: '100%', minHeight: 0 }}
-                  data={searchResultsFiltered}
-                  fixedHeaderContent={() => (
-                    <tr>
-                      <th className="search-col-thumb">תמונה ממוזערת</th>
-                      <th>נתיב</th>
-                      <th>תגיות</th>
-                      <th className="search-col-actions">פעולות</th>
-                    </tr>
-                  )}
-                components={{
-                  TableRow: ({ item, children, style, ...rowProps }) => (
-                    <tr {...rowProps} style={style} className={selectedSearchPath === item.path ? 'selected' : ''}>
-                      {children}
-                    </tr>
-                  )
-                }}
-                itemContent={(_index, row) => (
-                  <>
-                    <td className="search-col-thumb-cell">
-                      <FilePreview
-                        key={row.path}
-                        filePath={row.path}
-                        pathKind={row.kind}
-                        onOpenInWatermark={onOpenInWatermark}
-                        onOpenInFaces={onOpenInFaces}
-                      />
-                    </td>
-                    <td className="path-cell">
-                      <button
-                        type="button"
-                        className="path-open-btn"
-                        onClick={() => void window.api.openPath(row.path)}
-                        title="פתח ב־Explorer"
-                      >
-                        {row.path}
-                      </button>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn small-btn"
-                        onClick={() => setSearchTagsModal({ open: true, path: row.path, tags: row.tags })}
-                      >
-                        הצג תגיות
-                      </button>
-                    </td>
-                    <td className="search-actions-cell">
-                      <div className="search-result-actions-inline" role="group" aria-label="פעולות על הקובץ">
-                        <button
-                          type="button"
-                          className="btn search-result-action-icon-btn"
-                          onClick={() => void handleSelectSearchResult(row.path)}
-                          title="ערוך תגיות"
-                          aria-label="ערוך תגיות"
-                        >
-                          <svg
-                            viewBox="0 0 24 24"
-                            width="18"
-                            height="18"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.75"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          className="btn search-result-action-icon-btn"
-                          onClick={() => window.api.showInFolder(row.path)}
-                          title="הצג בסייר הקבצים"
-                          aria-label="הצג בסייר הקבצים"
-                        >
-                          <svg
-                            viewBox="0 0 24 24"
-                            width="18"
-                            height="18"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.75"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                          >
-                            <path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-                          </svg>
-                        </button>
+              {searchLoading ? (
+                <div className="search-results-loading" role="status" aria-live="polite">
+                  <div className="search-results-loading-head">
+                    <div className="search-results-loading-title">מחפש…</div>
+                    <div className="search-results-loading-bar" aria-hidden />
+                  </div>
+                  <div className="search-results-loading-skeleton" aria-hidden>
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <div key={i} className="search-results-loading-row">
+                        <div className="search-results-loading-cell thumb" />
+                        <div className="search-results-loading-cell path" />
+                        <div className="search-results-loading-cell tags" />
+                        <div className="search-results-loading-cell actions" />
                       </div>
-                    </td>
-                  </>
-                )}
-                />
-              </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="table-wrap search-results-table-wrap search-results-virtuoso-host">
+                  <TableVirtuoso
+                    style={{ height: '100%', minHeight: 0 }}
+                    data={searchResultsFiltered}
+                    fixedHeaderContent={() => (
+                      <tr>
+                        <th className="search-col-thumb">תמונה ממוזערת</th>
+                        <th>נתיב</th>
+                        <th>תגיות</th>
+                        <th className="search-col-actions">פעולות</th>
+                      </tr>
+                    )}
+                    components={{
+                      TableRow: ({ item, children, style, ...rowProps }) => (
+                        <tr {...rowProps} style={style} className={selectedSearchPath === item.path ? 'selected' : ''}>
+                          {children}
+                        </tr>
+                      )
+                    }}
+                    itemContent={(_index, row) => (
+                      <>
+                        <td className="search-col-thumb-cell">
+                          <FilePreview
+                            key={row.path}
+                            filePath={row.path}
+                            pathKind={row.kind}
+                            onOpenInWatermark={onOpenInWatermark}
+                            onOpenInFaces={onOpenInFaces}
+                          />
+                        </td>
+                        <td className="path-cell">
+                          <button
+                            type="button"
+                            className="path-open-btn"
+                            onClick={() => void window.api.openPath(row.path)}
+                            title="פתח ב־Explorer"
+                          >
+                            {row.path}
+                          </button>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn small-btn"
+                            onClick={() => setSearchTagsModal({ open: true, path: row.path, tags: row.tags })}
+                          >
+                            הצג תגיות
+                          </button>
+                        </td>
+                        <td className="search-actions-cell">
+                          <div className="search-result-actions-inline" role="group" aria-label="פעולות על הקובץ">
+                            <button
+                              type="button"
+                              className="btn search-result-action-icon-btn"
+                              onClick={() => void handleSelectSearchResult(row.path)}
+                              title="ערוך תגיות"
+                              aria-label="ערוך תגיות"
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="18"
+                                height="18"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.75"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              className="btn search-result-action-icon-btn"
+                              onClick={() => window.api.showInFolder(row.path)}
+                              title="הצג בסייר הקבצים"
+                              aria-label="הצג בסייר הקבצים"
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="18"
+                                height="18"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.75"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
+                      </>
+                    )}
+                  />
+                </div>
+              )}
             </div>
           </div>
         </div>
