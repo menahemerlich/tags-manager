@@ -3,6 +3,7 @@ import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { protocol } from 'electron'
 import type { App } from 'electron'
+import { getThumbnailCacheDir } from '../services/media/ThumbnailService'
 import { tryResolveMediaFsPath } from '../services/media/resolveMediaFsPath'
 
 // Must be registered before app.whenReady().
@@ -41,7 +42,7 @@ export function registerLocalResourceProtocol(app: App): void {
       }
 
       if (kind === 'thumb') {
-        const fp = join(app.getPath('userData'), 'cache', 'thumbnails', pathname)
+        const fp = join(getThumbnailCacheDir(app), pathname)
         if (!existsSync(fp)) {
           callback({ statusCode: 404 })
           return
