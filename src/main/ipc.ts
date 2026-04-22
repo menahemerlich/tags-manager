@@ -45,14 +45,18 @@ import { registerSupabaseSyncIpc } from './ipc/sync.ipc'
 import { registerMediaIpc } from './ipc/media.ipc'
 import { resolvePathPreferExistingOnAnyDrive, tryResolveMediaFsPath } from './services/media/resolveMediaFsPath'
 import { resolveSearchResultRowsDisplayPaths } from './services/resolveSearchDisplayPaths'
+import type { SearchResult } from '../shared/types'
 import {
   DATA_RELOAD_USER_DATA,
   WATERMARK_IMAGE_EXPORT_BUSY,
   WATERMARK_VIDEO_EXPORT_PROGRESS
 } from '../shared/constants/ipc-channels'
 import { registerUpdateIpc } from './ipc/update.ipc'
+import { searchByTagIdsInWorker } from './workers/runSearchInWorker'
+import { IdentityPool } from './workers/IdentityPool'
 
 let indexAbort: AbortController | null = null
+let identityPool: IdentityPool | null = null
 
 function mimeFromFilePath(filePath: string): string {
   const p = filePath.toLowerCase()
@@ -426,6 +430,8 @@ export function registerIpcHandlers(
     wc?.send('index:progress', payload)
   }
 
+  if (!identityPool) identityPool = new IdentityPool()
+
   ipcMain.handle(
     'paths:add-items',
     async (
@@ -448,6 +454,11 @@ export function registerIpcHandlers(
           }
           if (item.kind === 'file') {
             db.setPathTags(p, payload.tagNames, 'file')
+            // identity (async, non-blocking for UI)
+            void identityPool
+              ?.compute(p)
+              .then((id) => db.setPathIdentity(p, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes }))
+              .catch(() => {})
           } else {
             /** מחוץ ל־bulk: שמירת התיקייה והתגיות מתבצעת בלי אותו transaction של האינדוקס (מניעת אובדן/בלבול מצב). */
             db.setPathTags(p, payload.tagNames, 'folder')
@@ -461,6 +472,12 @@ export function registerIpcHandlers(
                   /** מונע דריסת שורת התיקייה ל־`file` אם נתיב הקובץ מזוהה בטעות עם שורש התיקייה. */
                   if (nf === p) return
                   db.upsertPath(nf, 'file')
+                  void identityPool
+                    ?.compute(nf)
+                    .then((id) =>
+                      db.setPathIdentity(nf, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes })
+                    )
+                    .catch(() => {})
                 }
               )
             } finally {
@@ -720,7 +737,14 @@ export function registerIpcHandlers(
       if (id === undefined) return { rows: [], truncated: false }
       ids.push(id)
     }
-    return await db.searchFilesByTagIds(ids)
+    // Heavy work (sql.js + effective-tag computation) runs in a worker to keep main thread responsive.
+    try {
+      const dbPath = join(app.getPath('userData'), 'tags-manager.sqlite')
+      return (await searchByTagIdsInWorker(dbPath, ids)) as SearchResult
+    } catch {
+      // Fallback: run in main if worker fails for any reason.
+      return await db.searchFilesByTagIds(ids)
+    }
   })
 
   ipcMain.handle(

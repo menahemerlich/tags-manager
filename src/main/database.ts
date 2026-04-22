@@ -368,6 +368,7 @@ export class TagDatabase {
     this.ensureFaceEmbeddingSchema()
     migrateSyncSchema(this.db)
     this.ensurePathsPathDrivelessSchema()
+    this.ensurePathsIdentitySchema()
     this.schedulePersist()
   }
 
@@ -398,6 +399,39 @@ export class TagDatabase {
       } catch {
         // אם נשארו כפילויות נדירות — לא לשבור את האתחול
       }
+    }
+  }
+
+  /**
+   * זהות קובץ/תיקייה מעבר לנתיב:
+   * - file_id (Windows NTFS) לשחזור move/rename על אותו כונן
+   * - fingerprint (דגימה מהירה) לשחזור בזמן אינדוקס ידני/החלפת כונן
+   *
+   * חייב להיות תואם־אחור: רק מוסיפים עמודות ואינדקסים; לא משנים לוגיקת UI קיימת.
+   */
+  private ensurePathsIdentitySchema(): void {
+    if (!this.pathsTableHasColumn('file_id')) this.db.run('ALTER TABLE paths ADD COLUMN file_id TEXT')
+    if (!this.pathsTableHasColumn('fingerprint')) this.db.run('ALTER TABLE paths ADD COLUMN fingerprint TEXT')
+    if (!this.pathsTableHasColumn('size_bytes')) this.db.run('ALTER TABLE paths ADD COLUMN size_bytes INTEGER')
+    if (!this.pathsTableHasColumn('fingerprint_updated_at')) {
+      this.db.run('ALTER TABLE paths ADD COLUMN fingerprint_updated_at TEXT')
+    }
+
+    try {
+      this.db.run(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_paths_file_id_alive
+         ON paths(file_id) WHERE deleted_at IS NULL AND file_id IS NOT NULL AND file_id != ''`
+      )
+    } catch {
+      // לא שוברים את האתחול אם נשארו כפילויות/SQLite לא תומך באינדקס חלקי
+    }
+    try {
+      this.db.run(
+        `CREATE INDEX IF NOT EXISTS idx_paths_fingerprint_alive
+         ON paths(fingerprint) WHERE deleted_at IS NULL AND fingerprint IS NOT NULL AND fingerprint != ''`
+      )
+    } catch {
+      // ignore
     }
   }
 
@@ -566,6 +600,28 @@ export class TagDatabase {
     const newId = lastInsertRowid(this.db)
     this.schedulePersist()
     return newId
+  }
+
+  setPathIdentity(
+    absPath: string,
+    identity: { fileId?: string | null; fingerprint?: string | null; sizeBytes?: number | null }
+  ): void {
+    const id = this.getPathId(absPath)
+    if (id === undefined) return
+    const fileId = identity.fileId ?? null
+    const fingerprint = identity.fingerprint ?? null
+    const sizeBytes = identity.sizeBytes ?? null
+    this.db.run(
+      `UPDATE paths
+       SET file_id = COALESCE(?, file_id),
+           fingerprint = COALESCE(?, fingerprint),
+           size_bytes = COALESCE(?, size_bytes),
+           fingerprint_updated_at = datetime('now'),
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [fileId, fingerprint, sizeBytes, id]
+    )
+    this.schedulePersist()
   }
 
   getPathId(absPath: string): number | undefined {
@@ -1512,6 +1568,17 @@ export class TagDatabase {
       return !underTrackedFolder
     })
     return visible
+  }
+
+  /** תיקיות שורש שהמשתמש הוסיף למעקב/ספרייה (ל-Watcher ולרזולוציה). */
+  listTrackedRootFolders(): string[] {
+    const stmt = this.db.prepare(`SELECT path FROM paths WHERE deleted_at IS NULL AND kind = 'folder' ORDER BY path COLLATE NOCASE`)
+    const out: string[] = []
+    while (stmt.step()) {
+      out.push(stmt.get()[0] as string)
+    }
+    stmt.free()
+    return out
   }
 
   private isPathInScope(pathValue: string, scopePath: string): boolean {

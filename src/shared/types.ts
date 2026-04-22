@@ -94,6 +94,12 @@ export interface SearchResultRow {
   path: string
   /** Windows: מפתח בלי אות כונן לסינון תחום ולפתרון נתיב תחת הכונן הנוכחי. */
   pathDriveless?: string | null
+  /** זהות NTFS (כשזמין) — מאפשר רזולוציית move/rename ללא סריקות מלאות. */
+  fileId?: string | null
+  /** Fingerprint מהיר (כשזמין) — safety-net בזמן אינדוקס ידני. */
+  fingerprint?: string | null
+  /** סמן אופציונלי ל-UI: הנתיב לא נמצא על הדיסק כרגע (לא חובה להשתמש). */
+  missing?: boolean
   kind: PathKind
   tags: string[]
 }

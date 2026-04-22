@@ -55,6 +55,13 @@ export function migrateSyncSchema(db: Database): void {
   if (!tableHasColumn(db, 'paths', 'uuid')) addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN uuid TEXT')
   if (!tableHasColumn(db, 'paths', 'created_at')) addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN created_at TEXT')
   if (!tableHasColumn(db, 'paths', 'deleted_at')) addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN deleted_at TEXT')
+  // Identity (move/rename resilience)
+  if (!tableHasColumn(db, 'paths', 'file_id')) addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN file_id TEXT')
+  if (!tableHasColumn(db, 'paths', 'fingerprint')) addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN fingerprint TEXT')
+  if (!tableHasColumn(db, 'paths', 'size_bytes')) addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN size_bytes INTEGER')
+  if (!tableHasColumn(db, 'paths', 'fingerprint_updated_at')) {
+    addColumn(db, 'paths', 'ALTER TABLE paths ADD COLUMN fingerprint_updated_at TEXT')
+  }
 
   // path_tags
   if (!tableHasColumn(db, 'path_tags', 'uuid')) addColumn(db, 'path_tags', 'ALTER TABLE path_tags ADD COLUMN uuid TEXT')
@@ -132,6 +139,24 @@ export function migrateSyncSchema(db: Database): void {
   backfillSimple('face_people', 'id')
   backfillSimple('face_embeddings', 'id')
   backfillSimple('person_profiles', 'person_id')
+
+  // Identity indexes (partial unique where possible; ignore if unsupported)
+  try {
+    db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_paths_file_id_alive
+       ON paths(file_id) WHERE deleted_at IS NULL AND file_id IS NOT NULL AND file_id != ''`
+    )
+  } catch {
+    // ignore (older sqlite variants)
+  }
+  try {
+    db.run(
+      `CREATE INDEX IF NOT EXISTS idx_paths_fingerprint_alive
+       ON paths(fingerprint) WHERE deleted_at IS NULL AND fingerprint IS NOT NULL AND fingerprint != ''`
+    )
+  } catch {
+    // ignore
+  }
 
   const pt = db.prepare(`SELECT path_id, tag_id FROM path_tags WHERE uuid IS NULL OR uuid = ''`)
   while (pt.step()) {

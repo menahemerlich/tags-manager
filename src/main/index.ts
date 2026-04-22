@@ -3,9 +3,11 @@ import { join } from 'node:path'
 import { TagDatabase } from './database'
 import { registerIpcHandlers } from './ipc'
 import { registerLocalResourceProtocol } from './protocol/localResourceProtocol'
+import { PathWatcherService } from './watch/PathWatcherService'
 
 let mainWindow: BrowserWindow | null = null
 let db: TagDatabase | null = null
+let watcher: PathWatcherService | null = null
 
 function createWindow(): void {
   const iconPath = join(__dirname, '..', '..', 'build', 'icon.png')
@@ -55,18 +57,31 @@ app.whenReady().then(async () => {
   )
   createWindow()
 
+  watcher = new PathWatcherService(
+    () => (db ? db.listTrackedRootFolders() : []),
+    () => {
+      // Hint-only: tell renderer it can refresh lists/search if needed.
+      mainWindow?.webContents.send('paths:changed-hint', { at: Date.now() })
+    }
+  )
+  watcher.start()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('window-all-closed', () => {
+  watcher?.stop()
+  watcher = null
   db?.close()
   db = null
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
+  watcher?.stop()
+  watcher = null
   db?.close()
   db = null
 })
