@@ -157,6 +157,14 @@ const api = {
   pickFiles: () => ipcRenderer.invoke('dialog:pick-files') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => ipcRenderer.invoke('dialog:pick-folders') as Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => ipcRenderer.invoke('dialog:pick-folder') as Promise<string | null>,
+  repairMovedFilesInFolder: (folderPath: string) =>
+    ipcRenderer.invoke('identity:repair-moved', folderPath) as Promise<
+      { ok: true; scanned: number; relinked: number } | { ok: false; error: string }
+    >,
+  smartSuggest: (items: { path: string; kind: PathKind }[]) =>
+    ipcRenderer.invoke('smart-suggest:start', { items }) as Promise<
+      import('../shared/types').SmartSuggestResult
+    >,
   pickImage: () => ipcRenderer.invoke('dialog:pick-image') as Promise<string | null>,
   pickWatermarkBase: () => ipcRenderer.invoke('dialog:pick-watermark-base') as Promise<string | null>,
   getImageDataUrl: (filePath: string) => ipcRenderer.invoke('files:image-data-url', filePath) as Promise<string | null>,

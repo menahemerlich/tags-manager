@@ -14,6 +14,7 @@ import type {
   ImportConflictChoice,
   PathKind,
   SearchResultRow,
+  SmartSuggestResult,
   TransferPackageProgress,
   TagFolderRow,
   TagImportPreview,
@@ -33,6 +34,7 @@ import { getFolderAccentStyle, type FolderAccentStyle } from './app/folderAccent
 import { AppFooter } from './app/AppFooter'
 import { AppMainPanels } from './app/AppMainPanels'
 import { transferProgressPercentFromStage } from './app/transferProgressUi'
+import { SmartSuggestModal } from './app/SmartSuggestModal'
 import type { SettingsView } from './app/panels/SettingsTabPanel'
 import { applySearchResultClientFilters } from './pages/Search/applySearchResultClientFilters'
 import {
@@ -47,6 +49,14 @@ export default function App() {
   const [librarySelectedItems, setLibrarySelectedItems] = useState<{ path: string; kind: PathKind }[] | null>(null)
   const [libraryTags, setLibraryTags] = useState<string[]>([])
   const [libraryTagDraft, setLibraryTagDraft] = useState('')
+  const [smartSuggestModal, setSmartSuggestModal] = useState<{
+    open: boolean
+    items: { path: string; kind: PathKind }[]
+    sampledFiles: string[]
+    suggestions: { tag: string; score: number; reasons: string[] }[]
+    accepted: Record<string, boolean>
+  }>({ open: false, items: [], sampledFiles: [], suggestions: [], accepted: {} })
+  const [smartSuggestBusy, setSmartSuggestBusy] = useState(false)
   const [tags, setTags] = useState<TagRow[]>([])
   const [tagFolders, setTagFolders] = useState<TagFolderRow[]>([])
   const [newTagFolderName, setNewTagFolderName] = useState('')
@@ -257,6 +267,56 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setIndexing(null)
+    }
+  }
+
+  async function handleSmartSuggest(): Promise<void> {
+    if (!librarySelectedItems?.length) return
+    setError(null)
+    setSmartSuggestBusy(true)
+    try {
+      const res: SmartSuggestResult = await window.api.smartSuggest(librarySelectedItems)
+      if (!res.ok) {
+        setError(res.error)
+        return
+      }
+      const accepted: Record<string, boolean> = {}
+      for (const s of res.suggestions) accepted[s.tag] = true
+      setSmartSuggestModal({
+        open: true,
+        items: librarySelectedItems,
+        sampledFiles: res.sampledFiles,
+        suggestions: res.suggestions,
+        accepted
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSmartSuggestBusy(false)
+    }
+  }
+
+  async function applySmartSuggestAccepted(): Promise<void> {
+    if (!smartSuggestModal.items.length) return
+    const tagNames = smartSuggestModal.suggestions.filter((s) => smartSuggestModal.accepted[s.tag]).map((s) => s.tag)
+    if (!tagNames.length) {
+      setSmartSuggestModal((p) => ({ ...p, open: false }))
+      return
+    }
+    setError(null)
+    try {
+      const res = await window.api.addItems(smartSuggestModal.items, tagNames)
+      if (!res.ok) {
+        setError(res.error)
+        return
+      }
+      // keep library UI in sync
+      for (const t of tagNames) addLibraryTag(t)
+      setSmartSuggestModal((p) => ({ ...p, open: false }))
+      await refreshTags()
+      await refreshTagFolders()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -751,6 +811,7 @@ export default function App() {
           libraryTagDraft,
           setLibraryTagDraft,
           libraryFolderSuggestions,
+          smartSuggestBusy,
           tags,
           tagFolders,
           expandedLibraryFolderIds,
@@ -758,6 +819,7 @@ export default function App() {
           folderIdByTagId,
           onPickFiles: handlePickFiles,
           onPickFolders: handlePickFolders,
+          onSmartSuggest: handleSmartSuggest,
           onOpenInWatermark: openPreviewInWatermarkTab,
           onOpenInFaces: openPreviewInFacesTab,
           requestAddLibraryTag,
@@ -874,6 +936,14 @@ export default function App() {
         renameTagFolderModal={renameTagFolderModal}
         setRenameTagFolderModal={setRenameTagFolderModal}
         applyRenameTagFolder={applyRenameTagFolder}
+      />
+
+      <SmartSuggestModal
+        state={smartSuggestModal}
+        setState={setSmartSuggestModal}
+        onApply={applySmartSuggestAccepted}
+        formatTagLabel={formatTagLabel}
+        getChipClassName={(tagName, isActive) => getTagClassName(tagName, 'chip', isActive)}
       />
 
 

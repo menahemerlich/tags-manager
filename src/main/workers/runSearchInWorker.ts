@@ -3,8 +3,9 @@ import { Worker } from 'node:worker_threads'
 import type { SearchResult } from '../../shared/types'
 
 export async function searchByTagIdsInWorker(dbPath: string, requiredTagIds: number[]): Promise<SearchResult> {
-  const worker = new Worker(new URL('./searchWorker.ts', import.meta.url), {
-    workerData: { dbPath }
+  const worker = new Worker(new URL('./workers/searchWorker.js', import.meta.url), {
+    workerData: { dbPath },
+    type: 'module'
   })
 
   try {

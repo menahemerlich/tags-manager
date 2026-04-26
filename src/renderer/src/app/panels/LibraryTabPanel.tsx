@@ -10,6 +10,7 @@ export type LibraryTabPanelProps = {
   libraryTagDraft: string
   setLibraryTagDraft: (v: string) => void
   libraryFolderSuggestions: string[]
+  smartSuggestBusy: boolean
   tags: TagRow[]
   tagFolders: TagFolderRow[]
   expandedLibraryFolderIds: Record<number, boolean>
@@ -17,6 +18,7 @@ export type LibraryTabPanelProps = {
   folderIdByTagId: Map<number, number>
   onPickFiles: () => void
   onPickFolders: () => void
+  onSmartSuggest: () => void | Promise<void>
   onOpenInWatermark: (path: string) => void
   onOpenInFaces: (path: string) => void
   requestAddLibraryTag: (raw: string) => void | Promise<void>
@@ -35,6 +37,7 @@ export function LibraryTabPanel({
   libraryTagDraft,
   setLibraryTagDraft,
   libraryFolderSuggestions,
+  smartSuggestBusy,
   tags,
   tagFolders,
   expandedLibraryFolderIds,
@@ -42,6 +45,7 @@ export function LibraryTabPanel({
   folderIdByTagId,
   onPickFiles,
   onPickFolders,
+  onSmartSuggest,
   onOpenInWatermark,
   onOpenInFaces,
   requestAddLibraryTag,
@@ -70,9 +74,37 @@ export function LibraryTabPanel({
         </div>
       ) : (
         <div>
-          <p className="muted small" style={{ marginTop: 0, marginBottom: '0.75rem' }}>
-            פריטים נבחרים:
-          </p>
+          <div className="library-selection-topbar">
+            <p className="muted small" style={{ marginTop: 0, marginBottom: 0 }}>
+              פריטים נבחרים:
+            </p>
+            <button
+              type="button"
+              className="btn smart-suggest-btn"
+              onClick={() => void onSmartSuggest()}
+              disabled={smartSuggestBusy}
+              title="מציע תגיות אוטומטית לפי דגימה (לוקאלי, לא שולח לענן)"
+            >
+              <span className="smart-suggest-icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 3.2c2.2 2.7 3.6 4.5 6.6 5.7-3 1.2-4.4 3-6.6 5.7-2.2-2.7-3.6-4.5-6.6-5.7 3-1.2 4.4-3 6.6-5.7Z"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M18.2 13.1c1 1.2 1.7 2 3.1 2.5-1.4.6-2.1 1.3-3.1 2.6-1-1.2-1.7-2-3.1-2.6 1.4-.5 2.1-1.3 3.1-2.5Z"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinejoin="round"
+                    opacity="0.85"
+                  />
+                </svg>
+              </span>
+              <span className="smart-suggest-label">{smartSuggestBusy ? 'מחשב…' : 'הצע תגיות'}</span>
+            </button>
+          </div>
           <ul className="path-list" style={{ marginBottom: '1rem' }}>
             {librarySelectedItems.map((item) => (
               <li key={item.path}>

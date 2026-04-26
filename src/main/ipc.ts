@@ -54,6 +54,7 @@ import {
 import { registerUpdateIpc } from './ipc/update.ipc'
 import { searchByTagIdsInWorker } from './workers/runSearchInWorker'
 import { IdentityPool } from './workers/IdentityPool'
+import { runSmartSuggestInWorker } from './workers/runSmartSuggestInWorker'
 
 let indexAbort: AbortController | null = null
 let identityPool: IdentityPool | null = null
@@ -457,7 +458,10 @@ export function registerIpcHandlers(
             // identity (async, non-blocking for UI)
             void identityPool
               ?.compute(p)
-              .then((id) => db.setPathIdentity(p, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes }))
+              .then((id) => {
+                db.relinkMissingPathByIdentity(p, 'file', { fileId: id.fileId, fingerprint: id.fingerprint })
+                db.setPathIdentity(p, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes })
+              })
               .catch(() => {})
           } else {
             /** מחוץ ל־bulk: שמירת התיקייה והתגיות מתבצעת בלי אותו transaction של האינדוקס (מניעת אובדן/בלבול מצב). */
@@ -475,7 +479,10 @@ export function registerIpcHandlers(
                   void identityPool
                     ?.compute(nf)
                     .then((id) =>
-                      db.setPathIdentity(nf, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes })
+                      {
+                        db.relinkMissingPathByIdentity(nf, 'file', { fileId: id.fileId, fingerprint: id.fingerprint })
+                        db.setPathIdentity(nf, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes })
+                      }
                     )
                     .catch(() => {})
                 }
@@ -513,6 +520,16 @@ export function registerIpcHandlers(
     const rows = getDb().listUserVisiblePathsWithDirectTags()
     /** נתיב אחיד (ניקוי bidi/NFC/מפרידים) כדי שלא יישבר עם עברית ב־RTL. */
     return rows.map((r) => ({ ...r, path: normalizePath(r.path) }))
+  })
+
+  ipcMain.handle('smart-suggest:start', async (_e, payload: { items: { path: string; kind: PathKind }[] }) => {
+    try {
+      const items = Array.isArray(payload?.items) ? payload.items : []
+      return await runSmartSuggestInWorker({ selectionItems: items })
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e)
+      return { ok: false as const, error: err, elapsedMs: 0 }
+    }
   })
 
   ipcMain.handle('paths:get-tags', async (_e, path: string) => {
@@ -882,6 +899,41 @@ export function registerIpcHandlers(
     })
     if (r.canceled || r.filePaths.length === 0) return null
     return normalizePath(r.filePaths[0] as string)
+  })
+
+  ipcMain.handle('identity:repair-moved', async (_e, folderPath: string) => {
+    try {
+      const db = getDb()
+      const root = normalizePath(folderPath)
+      if (!existsSync(root) || !statSync(root).isDirectory()) {
+        return { ok: false as const, error: 'תיקייה לא קיימת או לא נגישה' }
+      }
+      if (!identityPool) identityPool = new IdentityPool()
+      let scanned = 0
+      let relinked = 0
+      await indexFolderFiles(
+        { folderPath: root, signal: undefined, onProgress: undefined },
+        (filePath) => {
+          const nf = normalizePath(filePath)
+          scanned += 1
+          // מחשבים זהות ברקע ומנסים לרלינק רשומות חסרות
+          void identityPool
+            ?.compute(nf)
+            .then((id) => {
+              const before = db.relinkMissingPathByIdentity(nf, 'file', { fileId: id.fileId, fingerprint: id.fingerprint })
+              if (before !== undefined) relinked += 1
+              db.upsertPath(nf, 'file')
+              db.setPathIdentity(nf, { fileId: id.fileId, fingerprint: id.fingerprint, sizeBytes: id.sizeBytes })
+            })
+            .catch(() => {})
+        }
+      )
+      // Best-effort persist after scan; async identity updates may continue briefly.
+      db.persistNow()
+      return { ok: true as const, scanned, relinked }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('dialog:pick-image', async () => {
