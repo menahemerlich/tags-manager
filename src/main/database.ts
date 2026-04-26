@@ -624,6 +624,82 @@ export class TagDatabase {
     this.schedulePersist()
   }
 
+  /**
+   * רילינק של נתיב לפי זהות:
+   * אם קיימת רשומה אחרת עם אותו file_id/fingerprint והנתיב שלה לא קיים בדיסק,
+   * מעדכנים אותה לנתיב החדש כדי לשמור על שיוכי תגיות (path_id נשאר).
+   *
+   * חשוב: זה מופעל רק בזמן אינדוקס ידני (כשמגלים את המיקום החדש), ולא עושה סריקות סטארטאפ.
+   */
+  relinkMissingPathByIdentity(
+    newAbsPath: string,
+    kind: PathKind,
+    identity: { fileId?: string | null; fingerprint?: string | null }
+  ): number | undefined {
+    const newPath = normalizePath(newAbsPath)
+    const newDl = pathDrivelessKey(newPath)
+    const newId = this.getPathId(newPath)
+
+    const pickMissingCandidateId = (sql: string, value: string): number | undefined => {
+      const stmt = this.db.prepare(sql)
+      stmt.bind([value])
+      while (stmt.step()) {
+        const id = stmt.get()[0] as number
+        if (newId !== undefined && id === newId) continue
+        const st2 = this.db.prepare('SELECT path FROM paths WHERE id = ? AND deleted_at IS NULL')
+        st2.bind([id])
+        const ok2 = st2.step()
+        const storedPath = ok2 ? String(st2.get()[0] ?? '') : ''
+        st2.free()
+        if (!storedPath) continue
+        try {
+          if (existsSync(normalizePath(storedPath))) continue
+        } catch {
+          // treat as missing
+        }
+        stmt.free()
+        return id
+      }
+      stmt.free()
+      return undefined
+    }
+
+    const fileId = (identity.fileId ?? '').trim()
+    const fingerprint = (identity.fingerprint ?? '').trim()
+
+    // Priority: file_id (strongest), then fingerprint.
+    let candidateId: number | undefined
+    if (fileId) {
+      candidateId = pickMissingCandidateId(
+        "SELECT id FROM paths WHERE deleted_at IS NULL AND file_id = ? AND file_id != '' ORDER BY updated_at DESC",
+        fileId
+      )
+    }
+    if (candidateId === undefined && fingerprint) {
+      candidateId = pickMissingCandidateId(
+        "SELECT id FROM paths WHERE deleted_at IS NULL AND fingerprint = ? AND fingerprint != '' ORDER BY updated_at DESC",
+        fingerprint
+      )
+    }
+    if (candidateId === undefined) return undefined
+
+    // Update the existing row's path to the new location (keeps path_id and its tag links).
+    this.db.run(`UPDATE paths SET path = ?, path_driveless = ?, kind = ?, updated_at = datetime('now') WHERE id = ?`, [
+      newPath,
+      newDl,
+      kind,
+      candidateId
+    ])
+
+    // If we created a fresh row for the new path earlier, tombstone it to avoid duplicates.
+    if (newId !== undefined && newId !== candidateId) {
+      this.tombstonePathRowById(newId, newPath)
+    }
+
+    this.schedulePersist()
+    return candidateId
+  }
+
   getPathId(absPath: string): number | undefined {
     const p = normalizePath(absPath)
     const dl = pathDrivelessKey(p)

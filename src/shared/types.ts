@@ -70,6 +70,16 @@ export type ImportUserDataResult =
 
 export type PathKind = 'file' | 'folder'
 
+export interface SmartSuggestSuggestion {
+  tag: string
+  score: number
+  reasons: string[]
+}
+
+export type SmartSuggestResult =
+  | { ok: true; sampledFiles: string[]; suggestions: SmartSuggestSuggestion[]; elapsedMs: number }
+  | { ok: false; error: string; elapsedMs: number }
+
 export interface TagRow {
   id: number
   name: string

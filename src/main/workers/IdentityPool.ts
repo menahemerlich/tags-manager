@@ -21,7 +21,7 @@ export class IdentityPool {
   private pendingByPath = new Map<string, Pending>()
 
   constructor() {
-    this.worker = new Worker(new URL('./identityWorker.ts', import.meta.url))
+    this.worker = new Worker(new URL('./workers/identityWorker.js', import.meta.url), { type: 'module' })
     this.worker.on('message', (msg: unknown) => {
       const m = msg as { kind?: string; ok?: boolean; filePath?: string; fingerprint?: string | null; sizeBytes?: number | null; fileId?: string | null; error?: string }
       if (m.kind !== 'computeIdentity' || typeof m.filePath !== 'string') return

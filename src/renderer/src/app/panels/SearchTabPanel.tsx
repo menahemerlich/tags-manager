@@ -53,6 +53,43 @@ type FolderTagsModalState =
 /** מזהה סינתטי ל«ללא תיקייה» — לא מתנגש עם id אמיתי מהמסד */
 const UNGROUPED_FOLDER_ID = -1
 
+function NoResultsGhostIcon() {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      width="56"
+      height="56"
+      fill="none"
+      aria-hidden="true"
+      style={{ flex: '0 0 auto' }}
+    >
+      <path
+        d="M32 10c-9.5 0-17 7.7-17 17.2V52c0 1.1 1.2 1.8 2.2 1.2l3.7-2.2c.6-.4 1.4-.4 2 0l3.7 2.2c.6.4 1.4.4 2 0l3.7-2.2c.6-.4 1.4-.4 2 0l3.7 2.2c.6.4 1.4.4 2 0l3.7-2.2c.6-.4 1.4-.4 2 0l3.7 2.2c1 .6 2.2-.1 2.2-1.2V27.2C49 17.7 41.5 10 32 10Z"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinejoin="round"
+        opacity="0.9"
+      />
+      <path
+        d="M24.5 29.5c1.7-2 4.2-3.2 7.5-3.2s5.8 1.2 7.5 3.2"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        opacity="0.75"
+      />
+      <path
+        d="M26 36.5c1.8 1.4 3.8 2.1 6 2.1s4.2-.7 6-2.1"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        opacity="0.75"
+      />
+      <circle cx="26" cy="32" r="2" fill="currentColor" opacity="0.9" />
+      <circle cx="38" cy="32" r="2" fill="currentColor" opacity="0.9" />
+    </svg>
+  )
+}
+
 /** טאב חיפוש לפי תגיות, טבלת תוצאות ועריכת תגיות לקובץ נבחר */
 export function SearchTabPanel({
   searchScope,
@@ -107,6 +144,12 @@ export function SearchTabPanel({
     if (!q) return tags
     return tags.filter((t) => t.name.toLowerCase().includes(q))
   }, [tags, drawerTagFilter])
+
+  const [repairMovedOpen, setRepairMovedOpen] = useState(false)
+  const anyMissingInResults = useMemo(
+    () => searchResultsFiltered.some((r) => r.missing === true),
+    [searchResultsFiltered]
+  )
 
   return (
     <section className="panel search-panel search-panel-root">
@@ -288,8 +331,13 @@ export function SearchTabPanel({
                 מוצגות 5,000 התוצאות הראשונות. צמצמו חיפוש או הוסיפו תגיות.
               </p>
             )}
-            {searchSelected.length > 0 && !searchTruncated && !searchLoading && searchResultsFiltered.length === 0 && (
-              <p className="muted small search-results-banner">אין תוצאות.</p>
+            {!searchLoading && anyMissingInResults && (
+              <p className="muted small search-results-banner">
+                נמצאו פריטים שלא קיימים במיקום הרשום.{' '}
+                <button type="button" className="btn small-btn" onClick={() => setRepairMovedOpen(true)}>
+                  להראות תיקייה חדשה ולחפש שם
+                </button>
+              </p>
             )}
             <div className="search-results-table-shell">
               {searchLoading ? (
@@ -307,6 +355,18 @@ export function SearchTabPanel({
                         <div className="search-results-loading-cell actions" />
                       </div>
                     ))}
+                  </div>
+                </div>
+              ) : !searchTruncated && searchResultsFiltered.length === 0 ? (
+                <div className="search-results-empty-table" role="status" aria-live="polite">
+                  <NoResultsGhostIcon />
+                  <div className="search-results-empty-table-title">
+                    {searchSelected.length === 0 ? 'בחרו תגיות כדי להתחיל' : 'אין תוצאות'}
+                  </div>
+                  <div className="muted small">
+                    {searchSelected.length === 0
+                      ? 'הוסיפו תגית אחת או יותר כדי להציג תוצאות.'
+                      : 'נסו להסיר תגית אחת או לבחור תיקייה/כונן אחר.'}
                   </div>
                 </div>
               ) : (
@@ -461,6 +521,44 @@ export function SearchTabPanel({
                   </div>
                 )
               })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {repairMovedOpen && (
+        <div
+          className="overlay"
+          onClick={(e) => e.target === e.currentTarget && setRepairMovedOpen(false)}
+          style={{ paddingTop: '2rem', paddingBottom: '2rem' }}
+        >
+          <div className="overlay-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }} dir="rtl">
+            <h2 style={{ marginTop: 0, marginBottom: '0.5rem' }}>חיפוש קבצים שהועברו</h2>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              אם העברת קבצים/תמונות לתיקייה חדשה, אפשר לבחור את התיקייה החדשה כדי שהמערכת תנסה לזהות אותם לפי
+              fingerprint ולהחזיר את התגיות.
+            </p>
+            <div className="toolbar" style={{ justifyContent: 'flex-start' }}>
+              <button
+                type="button"
+                className="btn primary"
+                onClick={async () => {
+                  const picked = await window.api.pickFolder()
+                  if (!picked) return
+                  const res = await window.api.repairMovedFilesInFolder(picked)
+                  if (!res.ok) {
+                    alert(res.error)
+                    return
+                  }
+                  setRepairMovedOpen(false)
+                  void onRefreshSearchTagData()
+                }}
+              >
+                בחר תיקייה ולסרוק
+              </button>
+              <button type="button" className="btn" onClick={() => setRepairMovedOpen(false)}>
+                ביטול
+              </button>
             </div>
           </div>
         </div>

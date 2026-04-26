@@ -5,6 +5,7 @@ import type {
   TransferPackageProgress,
   SearchResult,
   SearchResultRow,
+  SmartSuggestResult,
   TagImportApplyPayload,
   TagImportPreview,
   TagRow,
@@ -94,6 +95,9 @@ export interface ElectronApi {
   pickFiles: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolders: () => Promise<{ path: string; kind: PathKind }[] | null>,
   pickFolder: () => Promise<string | null>,
+  /** סריקת תיקייה ידנית כדי לנסות למצוא קבצים שהועברו (רילינק לפי fingerprint/fileId). */
+  repairMovedFilesInFolder: (folderPath: string) => Promise<{ ok: true; scanned: number; relinked: number } | { ok: false; error: string }>
+  smartSuggest: (items: { path: string; kind: PathKind }[]) => Promise<SmartSuggestResult>
   pickImage: () => Promise<string | null>,
   pickWatermarkBase: () => Promise<string | null>,
   getImageDataUrl: (filePath: string) => Promise<string | null>,
