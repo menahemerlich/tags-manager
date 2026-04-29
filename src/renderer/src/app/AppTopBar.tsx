@@ -13,6 +13,7 @@ const NAV: ReadonlyArray<readonly [Tab | FaceTab, string]> = [
   ['faces', 'זיהוי פנים'],
   ['watermark', 'סימן מים'],
   ['cloud-sync', 'סנכרון ענן'],
+  ['drive-sync', 'השוואת כוננים'],
   ['settings', 'הגדרות']
 ]
 

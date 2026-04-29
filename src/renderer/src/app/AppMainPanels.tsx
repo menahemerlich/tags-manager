@@ -1,4 +1,5 @@
 import SyncPage from '../pages/Sync/SyncPage'
+import { DriveSyncPage } from '../pages/DriveSync/DriveSyncPage'
 import { FaceRecognitionTab } from '../face/FaceRecognitionTab'
 import { WatermarkEditorTab } from '../watermark/WatermarkEditorTab'
 import type { Tab, FaceTab } from './appTabs'
@@ -69,6 +70,8 @@ export function AppMainPanels({
       )}
 
       {tab === 'cloud-sync' && <SyncPage />}
+
+      {tab === 'drive-sync' && <DriveSyncPage />}
 
       {tab === 'settings' && <SettingsTabPanel {...settings} />}
     </main>

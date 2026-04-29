@@ -30,6 +30,16 @@ import type {
 } from './types'
 import type { ConflictListPayload, SyncCheckResult, SyncProgressPayload, SyncSummary } from './types/sync.types'
 import type { UpdateFeedMessage } from './types/update.types'
+import type {
+  ConflictResponse,
+  CopyConflictPrompt,
+  CopyStage,
+  DriveSyncCopyDone,
+  DriveSyncCopyRequest,
+  DriveSyncScanDone,
+  DriveSyncScanRequest,
+  ScanProgress
+} from './driveSyncTypes'
 
 /** Debug payload: how main process interprets a file path (IPC / fs). */
 export interface MediaPathDiagnostics {
@@ -132,4 +142,13 @@ export interface ElectronApi {
   getMediaUrl: (filePath: string) => Promise<string>
   /** For debugging "file not found" vs working Open button — same normalization as media + open. */
   explainMediaPath: (filePath: string) => Promise<MediaPathDiagnostics>
+  driveSyncStart: (req: DriveSyncScanRequest) => Promise<DriveSyncScanDone>
+  driveSyncCancel: () => Promise<{ ok: true }>
+  driveSyncCopy: (req: DriveSyncCopyRequest) => Promise<DriveSyncCopyDone>
+  driveSyncCopyCancel: () => Promise<{ ok: true }>
+  respondDriveSyncConflict: (token: string, response: ConflictResponse) => Promise<{ ok: true }>
+  onDriveSyncScanProgress: (cb: (p: ScanProgress) => void) => () => void
+  onDriveSyncCopyProgress: (cb: (p: CopyStage) => void) => () => void
+  onDriveSyncCopyDone: (cb: (p: DriveSyncCopyDone) => void) => () => void
+  onDriveSyncConflictPrompt: (cb: (p: CopyConflictPrompt) => void) => () => void
 }
