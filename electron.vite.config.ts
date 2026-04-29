@@ -11,7 +11,8 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           'workers/searchWorker': resolve('src/main/workers/searchWorker.ts'),
           'workers/identityWorker': resolve('src/main/workers/identityWorker.ts'),
-          'workers/smartSuggestWorker': resolve('src/main/workers/smartSuggestWorker.ts')
+          'workers/smartSuggestWorker': resolve('src/main/workers/smartSuggestWorker.ts'),
+          'workers/driveSyncScanWorker': resolve('src/main/workers/driveSyncScanWorker.ts')
         }
       }
     }

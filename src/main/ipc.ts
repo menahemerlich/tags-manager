@@ -52,6 +52,7 @@ import {
   WATERMARK_VIDEO_EXPORT_PROGRESS
 } from '../shared/constants/ipc-channels'
 import { registerUpdateIpc } from './ipc/update.ipc'
+import { registerDriveSyncIpc } from './ipc/driveSync.ipc'
 import { searchByTagIdsInWorker } from './workers/runSearchInWorker'
 import { IdentityPool } from './workers/IdentityPool'
 import { runSmartSuggestInWorker, cancelSmartSuggest } from './workers/runSmartSuggestInWorker'
@@ -426,6 +427,7 @@ export function registerIpcHandlers(
   registerSupabaseSyncIpc(app, getDb, getWindow)
   registerMediaIpc(app)
   registerUpdateIpc(app, getWindow)
+  registerDriveSyncIpc(getWindow)
 
   const sendProgress = (wc: WebContents | undefined, payload: { done: number; total: number; currentPath: string }) => {
     wc?.send('index:progress', payload)

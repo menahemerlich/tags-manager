@@ -52,6 +52,17 @@ import type {
   WatermarkVideoExportPayload
 } from '../shared/types'
 import type { UpdateFeedMessage } from '../shared/types/update.types'
+import {
+  DRIVE_SYNC_CHANNELS,
+  type ConflictResponse,
+  type CopyConflictPrompt,
+  type CopyStage,
+  type DriveSyncCopyDone,
+  type DriveSyncCopyRequest,
+  type DriveSyncScanDone,
+  type DriveSyncScanRequest,
+  type ScanProgress
+} from '../shared/driveSyncTypes'
 
 const api = {
   addItems: (items: { path: string; kind: PathKind }[], tagNames: string[]) =>
@@ -224,7 +235,37 @@ const api = {
     ipcRenderer.invoke(MEDIA_GET_THUMBNAIL, filePath, opts) as Promise<string>,
   getMediaUrl: (filePath: string) => ipcRenderer.invoke(MEDIA_GET_MEDIA_URL, filePath) as Promise<string>,
   explainMediaPath: (filePath: string) =>
-    ipcRenderer.invoke(MEDIA_EXPLAIN_PATH, filePath) as Promise<MediaPathDiagnostics>
+    ipcRenderer.invoke(MEDIA_EXPLAIN_PATH, filePath) as Promise<MediaPathDiagnostics>,
+  driveSyncStart: (req: DriveSyncScanRequest) =>
+    ipcRenderer.invoke(DRIVE_SYNC_CHANNELS.scanStart, req) as Promise<DriveSyncScanDone>,
+  driveSyncCancel: () =>
+    ipcRenderer.invoke(DRIVE_SYNC_CHANNELS.scanCancel) as Promise<{ ok: true }>,
+  driveSyncCopy: (req: DriveSyncCopyRequest) =>
+    ipcRenderer.invoke(DRIVE_SYNC_CHANNELS.copyStart, req) as Promise<DriveSyncCopyDone>,
+  driveSyncCopyCancel: () =>
+    ipcRenderer.invoke(DRIVE_SYNC_CHANNELS.copyCancel) as Promise<{ ok: true }>,
+  respondDriveSyncConflict: (token: string, response: ConflictResponse) =>
+    ipcRenderer.invoke(DRIVE_SYNC_CHANNELS.conflictResponse, { token, response }) as Promise<{ ok: true }>,
+  onDriveSyncScanProgress: (cb: (p: ScanProgress) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: ScanProgress) => cb(payload)
+    ipcRenderer.on(DRIVE_SYNC_CHANNELS.scanProgress, handler)
+    return () => ipcRenderer.removeListener(DRIVE_SYNC_CHANNELS.scanProgress, handler)
+  },
+  onDriveSyncCopyProgress: (cb: (p: CopyStage) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: CopyStage) => cb(payload)
+    ipcRenderer.on(DRIVE_SYNC_CHANNELS.copyProgress, handler)
+    return () => ipcRenderer.removeListener(DRIVE_SYNC_CHANNELS.copyProgress, handler)
+  },
+  onDriveSyncCopyDone: (cb: (p: DriveSyncCopyDone) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: DriveSyncCopyDone) => cb(payload)
+    ipcRenderer.on(DRIVE_SYNC_CHANNELS.copyDone, handler)
+    return () => ipcRenderer.removeListener(DRIVE_SYNC_CHANNELS.copyDone, handler)
+  },
+  onDriveSyncConflictPrompt: (cb: (p: CopyConflictPrompt) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: CopyConflictPrompt) => cb(payload)
+    ipcRenderer.on(DRIVE_SYNC_CHANNELS.conflictPrompt, handler)
+    return () => ipcRenderer.removeListener(DRIVE_SYNC_CHANNELS.conflictPrompt, handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)
