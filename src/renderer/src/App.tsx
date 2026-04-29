@@ -270,13 +270,36 @@ export default function App() {
     }
   }
 
+  const smartSuggestTokenRef = useRef(0)
+
+  function cancelSmartSuggest(): void {
+    smartSuggestTokenRef.current += 1
+    setSmartSuggestBusy(false)
+    void window.api.cancelSmartSuggest?.().catch(() => undefined)
+  }
+
   async function handleSmartSuggest(): Promise<void> {
     if (!librarySelectedItems?.length) return
+    if (smartSuggestBusy) {
+      cancelSmartSuggest()
+      return
+    }
     setError(null)
+    smartSuggestTokenRef.current += 1
+    const myToken = smartSuggestTokenRef.current
     setSmartSuggestBusy(true)
     try {
       const res: SmartSuggestResult = await window.api.smartSuggest(librarySelectedItems)
+      // Ignore stale results from an aborted/superseded run.
+      if (smartSuggestTokenRef.current !== myToken) return
       if (!res.ok) {
+        // Suppress quiet "cancelled" outcomes (user-initiated). Surface timeouts loudly
+        // so the user understands why nothing appeared.
+        if (/cancelled/i.test(res.error)) return
+        if (/timeout/i.test(res.error)) {
+          setError('חישוב ההצעות נכשל בזמן (Timeout). נסה שוב או הקטן את מספר הקבצים שנבחרו.')
+          return
+        }
         setError(res.error)
         return
       }
@@ -290,9 +313,10 @@ export default function App() {
         accepted
       })
     } catch (e) {
+      if (smartSuggestTokenRef.current !== myToken) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setSmartSuggestBusy(false)
+      if (smartSuggestTokenRef.current === myToken) setSmartSuggestBusy(false)
     }
   }
 
@@ -321,6 +345,7 @@ export default function App() {
   }
 
   function handleLibraryCancel() {
+    cancelSmartSuggest()
     setLibrarySelectedItems(null)
     setLibraryTags([])
     setLibraryTagFolderByName({})

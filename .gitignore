@@ -14,3 +14,6 @@ src/renderer/public/face-models/*
 
 # ONNX face models (downloaded on-demand via scripts/download-onnx-face-models.mjs)
 resources/models/face/*.onnx
+
+# ONNX smart-suggest models (large binaries, fetched manually)
+resources/models/smart-suggest/*.onnx

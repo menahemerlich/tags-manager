@@ -117,11 +117,16 @@ export class ThumbnailService {
       await this.ffmpegQueue.enqueue(() => this.generateVideoThumb(filePath, cachePath))
       return { url }
     } catch (e) {
-      writeFileSync(
-        failMarker,
-        JSON.stringify({ at: new Date().toISOString(), message: (e as Error)?.message ?? String(e) }, null, 2),
-        'utf8'
-      )
+      try {
+        mkdirSync(this.cacheDir, { recursive: true })
+        writeFileSync(
+          failMarker,
+          JSON.stringify({ at: new Date().toISOString(), message: (e as Error)?.message ?? String(e) }, null, 2),
+          'utf8'
+        )
+      } catch (markerErr) {
+        console.warn('[thumb-cache] failed to write fail marker', markerErr)
+      }
 
       const m = ((e as Error)?.message ?? String(e)).toLowerCase()
       const looksLikeMissingBinary =

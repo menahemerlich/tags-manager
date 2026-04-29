@@ -98,6 +98,7 @@ export interface ElectronApi {
   /** סריקת תיקייה ידנית כדי לנסות למצוא קבצים שהועברו (רילינק לפי fingerprint/fileId). */
   repairMovedFilesInFolder: (folderPath: string) => Promise<{ ok: true; scanned: number; relinked: number } | { ok: false; error: string }>
   smartSuggest: (items: { path: string; kind: PathKind }[]) => Promise<SmartSuggestResult>
+  cancelSmartSuggest: () => Promise<{ ok: true }>
   pickImage: () => Promise<string | null>,
   pickWatermarkBase: () => Promise<string | null>,
   getImageDataUrl: (filePath: string) => Promise<string | null>,

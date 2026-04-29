@@ -54,7 +54,7 @@ import {
 import { registerUpdateIpc } from './ipc/update.ipc'
 import { searchByTagIdsInWorker } from './workers/runSearchInWorker'
 import { IdentityPool } from './workers/IdentityPool'
-import { runSmartSuggestInWorker } from './workers/runSmartSuggestInWorker'
+import { runSmartSuggestInWorker, cancelSmartSuggest } from './workers/runSmartSuggestInWorker'
 
 let indexAbort: AbortController | null = null
 let identityPool: IdentityPool | null = null
@@ -530,6 +530,11 @@ export function registerIpcHandlers(
       const err = e instanceof Error ? e.message : String(e)
       return { ok: false as const, error: err, elapsedMs: 0 }
     }
+  })
+
+  ipcMain.handle('smart-suggest:cancel', async () => {
+    cancelSmartSuggest()
+    return { ok: true as const }
   })
 
   ipcMain.handle('paths:get-tags', async (_e, path: string) => {

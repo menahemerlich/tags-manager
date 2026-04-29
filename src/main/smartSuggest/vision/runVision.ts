@@ -14,16 +14,30 @@ export interface VisionRunOptions {
 }
 
 let cachedModel: VisionModel | null = null
+let modelLoading: Promise<VisionModel> | null = null
 
 async function ensureModel(): Promise<VisionModel> {
   if (cachedModel) return cachedModel
+  if (modelLoading) return modelLoading
   // Default expectation: you provide a small classifier model + labels under resources/models/smart-suggest/
-  cachedModel = await loadVisionModel({
+  modelLoading = loadVisionModel({
     modelFilename: 'mobilenetv2.onnx',
     labelsFilename: 'labels.txt',
     inputSize: 224
+  }).then((m) => {
+    cachedModel = m
+    return m
   })
-  return cachedModel
+  return modelLoading
+}
+
+/** Pre-load the ONNX model and runtime so the first inference call is fast. */
+export async function warmVisionModel(): Promise<void> {
+  try {
+    await ensureModel()
+  } catch {
+    // Best-effort; missing model is handled later in analyzeVision.
+  }
 }
 
 function topK(arr: Float32Array, k: number): { idx: number; score: number }[] {

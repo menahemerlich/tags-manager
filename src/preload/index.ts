@@ -165,6 +165,8 @@ const api = {
     ipcRenderer.invoke('smart-suggest:start', { items }) as Promise<
       import('../shared/types').SmartSuggestResult
     >,
+  cancelSmartSuggest: () =>
+    ipcRenderer.invoke('smart-suggest:cancel') as Promise<{ ok: true }>,
   pickImage: () => ipcRenderer.invoke('dialog:pick-image') as Promise<string | null>,
   pickWatermarkBase: () => ipcRenderer.invoke('dialog:pick-watermark-base') as Promise<string | null>,
   getImageDataUrl: (filePath: string) => ipcRenderer.invoke('files:image-data-url', filePath) as Promise<string | null>,

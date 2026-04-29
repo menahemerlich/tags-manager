@@ -82,8 +82,7 @@ export function LibraryTabPanel({
               type="button"
               className="btn smart-suggest-btn"
               onClick={() => void onSmartSuggest()}
-              disabled={smartSuggestBusy}
-              title="מציע תגיות אוטומטית לפי דגימה (לוקאלי, לא שולח לענן)"
+              title={smartSuggestBusy ? 'לחץ לביטול החישוב' : 'מציע תגיות אוטומטית לפי דגימה (לוקאלי, לא שולח לענן)'}
             >
               <span className="smart-suggest-icon" aria-hidden="true">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -102,7 +101,7 @@ export function LibraryTabPanel({
                   />
                 </svg>
               </span>
-              <span className="smart-suggest-label">{smartSuggestBusy ? 'מחשב…' : 'הצע תגיות'}</span>
+              <span className="smart-suggest-label">{smartSuggestBusy ? 'מחשב… (בטל)' : 'הצע תגיות'}</span>
             </button>
           </div>
           <ul className="path-list" style={{ marginBottom: '1rem' }}>
